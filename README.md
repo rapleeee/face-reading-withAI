@@ -11,6 +11,7 @@
 - **Hasil kaya konteks** – ekspresi, manifesting karier & masa depan, rekomendasi SMA/SMK lengkap dengan indikator kekuatan/peluang/catatan.
 - **Story-ready sharing** – generator story Instagram/WhatsApp (gambar & video WebM) plus PDF export dan clipboard sharing.
 - **Riwayat lokal** – simpan hingga 5 sesi terakhir sebagai thumbnail ringan untuk ditinjau ulang.
+- **PWA support** – installable sebagai aplikasi mobile/desktop dengan offline cache dasar via service worker.
 
 ## 🧱 Teknologi
 
@@ -78,12 +79,14 @@ Build menggunakan `next build` (webpack) agar tidak terjadi error Turbopack pada
 | `npm run build` | Build produksi menggunakan webpack standard |
 | `npm run start` | Menjalankan server produksi hasil build |
 | `npm run lint` | Menjalankan eslint pada seluruh project |
+| `npm run build && npm run start` | Menjalankan build + service worker PWA |
 
 ## 💡 Tips deploy
 
 - Pastikan environment variable tersedia (Hugging Face & Together AI).
 - Jika environment target tidak memiliki akses ke domain Google Fonts, proyek sudah menggunakan fallback font lokal.
 - Untuk hosting yang memblokir Web Share API, story masih dapat diunduh manual.
+- Untuk PWA, deploy di HTTPS dan pastikan file `manifest.webmanifest` serta `sw.js` tersaji dari root.
 
 ---
 

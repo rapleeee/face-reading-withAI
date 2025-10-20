@@ -16,7 +16,8 @@ export const metadata: Metadata = {
     icon: "/brand-icon.svg",
     apple: "/brand-icon.svg",
   },
-}; 
+  manifest: "/manifest.webmanifest",
+};
 
 export default function RootLayout({
   children,
