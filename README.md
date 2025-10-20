@@ -1,36 +1,90 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+<div align="center">
+  <img src="./public/brand-icon.svg" alt="Face Reading Vision" width="96" />
+  <h1>Face Reading Vision</h1>
+  <p>Web-based face reading assistant yang menganalisis ekspresi wajah dan menyarankan manifesting karier, masa depan, dan jalur pendidikan secara instan.</p>
+</div>
 
-## Getting Started
+## ✨ Fitur utama
 
-First, run the development server:
+- **Live webcam capture** – ambil snapshot langsung dari browser dengan panduan framing.
+- **Analisis AI terintegrasi** – kombinasikan model ekspresi Hugging Face dengan narasi Together AI.
+- **Hasil kaya konteks** – ekspresi, manifesting karier & masa depan, rekomendasi SMA/SMK lengkap dengan indikator kekuatan/peluang/catatan.
+- **Story-ready sharing** – generator story Instagram/WhatsApp (gambar & video WebM) plus PDF export dan clipboard sharing.
+- **Riwayat lokal** – simpan hingga 5 sesi terakhir sebagai thumbnail ringan untuk ditinjau ulang.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## 🧱 Teknologi
+
+- [Next.js 15 (App Router)](https://nextjs.org)
+- [React 19](https://react.dev)
+- [Tailwind CSS 4](https://tailwindcss.com)
+- [shadcn/ui](https://ui.shadcn.com) komponen kustom
+- Hugging Face Inference API (`nateraw/vision-transformer-emotion-ferplus`)
+- Together AI Chat Completions (`meta-llama/Llama-3.3-70B-Instruct-Turbo-Free`)
+
+## 🚀 Menjalankan proyek
+
+### Persiapan environment
+
+Salin `.env.local` dan isi kredensial API:
+
+```env
+NEXT_PUBLIC_HF_TOKEN=hf_xxx              # token Hugging Face (read access)
+TOGETHER_API_KEY=tgp_v1_xxx               # Together AI API key
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+> **Catatan:** token Hugging Face diekspos ke sisi klien karena kamera berjalan di browser. Bila ingin full server-side, gunakan proxy sendiri atau model alternatif.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Instalasi & pengembangan
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm install
+npm run dev
+```
 
-## Learn More
+Kunjungi `http://localhost:3000`. Izinkan akses kamera ketika diminta.
 
-To learn more about Next.js, take a look at the following resources:
+### Produksi / build
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+npm run build
+npm start
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Build menggunakan `next build` (webpack) agar tidak terjadi error Turbopack pada lingkungan tanpa akses jaringan.
 
-## Deploy on Vercel
+## 🧪 Penggunaan fitur penting
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+| Fitur | Lokasi UI | Catatan |
+|-------|-----------|---------|
+| Ambil snapshot | Panel Kamera Live | Ikuti panduan grid & tips pencahayaan |
+| Analisis AI | Tombol **Analisis Wajah** | Hasil tampil lengkap dengan tingkat keyakinan |
+| Story Instagram / WhatsApp | Panel hasil → tombol **Story Instagram / Story WhatsApp** | Menggunakan Web Share API; fallback download jika tidak tersedia |
+| Story Video | Tombol **Story Video** | Membuat animasi WebM 3.6 detik (membutuhkan dukungan `MediaRecorder`) |
+| Preview Story | Tombol **Preview Story / Preview Video** | Menampilkan modal preview dan opsi simpan |
+| Unduh PDF | Tombol **Unduh PDF** | Termasuk sumber analisis (AI/Fallback/Cache) |
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## 🗂 Struktur penting
+
+- `src/app/page.tsx` – halaman utama, logika kamera, state hasil, sharing story.
+- `src/app/api/face-reading/route.ts` – endpoint server yang memanggil Hugging Face + Together AI.
+- `public/brand-icon.svg` – ikon utama aplikasi (digunakan untuk favicon & readme).
+- `src/components/ui/*` – komponen UI bergaya shadcn.
+
+## 📦 Skrip npm
+
+| Skrip | Deskripsi |
+|-------|-----------|
+| `npm run dev` | Menjalankan development server dengan Turbopack |
+| `npm run build` | Build produksi menggunakan webpack standard |
+| `npm run start` | Menjalankan server produksi hasil build |
+| `npm run lint` | Menjalankan eslint pada seluruh project |
+
+## 💡 Tips deploy
+
+- Pastikan environment variable tersedia (Hugging Face & Together AI).
+- Jika environment target tidak memiliki akses ke domain Google Fonts, proyek sudah menggunakan fallback font lokal.
+- Untuk hosting yang memblokir Web Share API, story masih dapat diunduh manual.
+
+---
+
+Selamat membangun pengalaman face reading yang magis! 💫
