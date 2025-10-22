@@ -58,17 +58,46 @@ type FaceReadingResult = {
     pekerjaanKarir: ManifestPoint[];
     masaDepan: ManifestPoint[];
   };
-  rekomendasiSekolah: {
-    tipe: "SMK" | "SMA";
-    alasan: ManifestPoint[];
-    langkahCepat: string;
-    kebiasaanPendukung: string[];
+  rekomendasiJurusan: {
+    utama: {
+      kode: string;
+      nama: string;
+      alasan: ManifestPoint[];
+      langkahFokus: string;
+      kebiasaanPendukung: string[];
+    };
+    alternatif: Array<{
+      kode: string;
+      nama: string;
+      catatan: string;
+    }>;
   };
   generatedAt: string;
   meta: {
     source: "ai" | "fallback";
     cached?: boolean;
   };
+};
+
+type LegacyFaceReadingResult = Omit<FaceReadingResult, "rekomendasiJurusan"> & {
+  rekomendasiSekolah: {
+    tipe: "SMK" | "SMA";
+    alasan: ManifestPoint[];
+    langkahCepat: string;
+    kebiasaanPendukung: string[];
+  };
+};
+
+type StoredSessionEntry = {
+  id: string;
+  image: string;
+  result: FaceReadingResult | LegacyFaceReadingResult;
+};
+
+type SessionEntry = {
+  id: string;
+  image: string;
+  result: FaceReadingResult;
 };
 
 const INIT_RESULT: FaceReadingResult | null = null;
@@ -107,12 +136,6 @@ const indicatorMeta: Record<
 
 const HISTORY_KEY = "face-reading-history-v1";
 
-type SessionEntry = {
-  id: string;
-  image: string;
-  result: FaceReadingResult;
-};
-
 const CAPTURE_TIPS = [
   "Posisikan wajah sejajar kamera dengan pencahayaan menghadap depan.",
   "Pastikan dahi hingga dagu terlihat jelas, hindari menutupi wajah.",
@@ -123,6 +146,106 @@ const STORY_WIDTH = 1080;
 const STORY_HEIGHT = 1920;
 const SITE_NAME = "Face Reading Vision";
 const SITE_HANDLE = "facereading.ai";
+
+const MAJOR_LABELS: Record<string, string> = {
+  RPL: "Rekayasa Perangkat Lunak",
+  DKV: "Desain Komunikasi Visual",
+  TKJ: "Teknik Komputer dan Jaringan",
+};
+
+type MoodSnippet = {
+  title: string;
+  message: string;
+  emoji: string;
+};
+
+const MOOD_SNIPPETS: Record<string, MoodSnippet> = {
+  happiness: {
+    title: "Mood Bahagia",
+    message: "Wih, cerita dong! Energi kamu lagi cerah banget, bagikan kabar baikmu.",
+    emoji: ":)",
+  },
+  sadness: {
+    title: "Mood Lagi Teduh",
+    message: "Semangat ya, tarik napas dalam-dalam. Kamu boleh rehat sebentar, nanti bangkit lagi.",
+    emoji: "<3",
+  },
+  anger: {
+    title: "Mood Super Fokus",
+    message: "Salurkan tegasnya energi ke tugas penting biar hasilnya maksimal.",
+    emoji: "!!",
+  },
+  surprise: {
+    title: "Mood Penasaran",
+    message: "Seru nih! Catat ide-ide baru sebelum menghilang dan eksplor pelan-pelan.",
+    emoji: ":o",
+  },
+  fear: {
+    title: "Mood Waspada",
+    message: "Langkah kecil tetap kemajuan. Kamu aman, ambil satu progres dulu.",
+    emoji: "^_^",
+  },
+  disgust: {
+    title: "Mood Perfeksionis",
+    message: "Standar kamu tinggi banget. Pilih satu hal untuk diperbaiki, sisanya biarkan mengalir.",
+    emoji: ":|",
+  },
+  contempt: {
+    title: "Mood Kritis Tajam",
+    message: "Gunakan insight kamu buat kasih solusi bareng apresiasi ya.",
+    emoji: "[]",
+  },
+  neutral: {
+    title: "Mood Lagi Santai",
+    message: "Tetap jaga energi seimbang, kamu siap adaptasi kapan pun dibutuhkan.",
+    emoji: "c:",
+  },
+  unknown: {
+    title: "Mood Belum Jelas",
+    message: "Coba ambil foto lagi dengan pencahayaan lebih terang supaya AI bisa membaca ekspresi dengan jelas.",
+    emoji: "*",
+  },
+};
+
+const getMoodSnippet = (label?: string): MoodSnippet => {
+  if (!label) return MOOD_SNIPPETS.unknown;
+  const key = label.toLowerCase();
+  return MOOD_SNIPPETS[key] ?? MOOD_SNIPPETS.unknown;
+};
+
+const upgradeLegacyResult = (
+  result: FaceReadingResult | LegacyFaceReadingResult,
+): FaceReadingResult => {
+  if ("rekomendasiJurusan" in result) {
+    return result;
+  }
+
+  const { rekomendasiSekolah, ...rest } = result as LegacyFaceReadingResult;
+  const fallbackLegacy = rekomendasiSekolah ?? {
+    tipe: "SMK" as const,
+    alasan: [],
+    langkahCepat: "Fokus pada pondasi belajar konsisten.",
+    kebiasaanPendukung: [],
+  };
+  const mapped =
+    fallbackLegacy.tipe === "SMK"
+      ? { kode: "TKJ", nama: MAJOR_LABELS.TKJ }
+      : { kode: "RPL", nama: MAJOR_LABELS.RPL };
+
+  return {
+    ...rest,
+    rekomendasiJurusan: {
+      utama: {
+        kode: mapped.kode,
+        nama: mapped.nama,
+        alasan: fallbackLegacy.alasan,
+        langkahFokus: fallbackLegacy.langkahCepat,
+        kebiasaanPendukung: fallbackLegacy.kebiasaanPendukung,
+      },
+      alternatif: [],
+    },
+  };
+};
 
 async function createThumbnail(dataUrl: string, targetWidth = 360) {
   try {
@@ -242,22 +365,27 @@ useEffect(() => {
     try {
       const stored = window.localStorage.getItem(HISTORY_KEY);
       if (!stored) return;
-      const parsed = JSON.parse(stored) as SessionEntry[];
+      const parsed = JSON.parse(stored) as StoredSessionEntry[];
       if (!Array.isArray(parsed)) return;
       const trimmed = parsed.slice(0, 5);
       const sanitized = await Promise.all(
         trimmed.map(async (entry) => {
-          if (!entry?.image) return entry;
-          if (entry.image.length > 200_000) {
+          const upgraded = upgradeLegacyResult(entry.result);
+          let image = entry.image ?? "";
+          if (image && image.length > 200_000) {
             try {
-              const thumb = await createThumbnail(entry.image, 320);
-              return { ...entry, image: thumb };
+              image = await createThumbnail(image, 320);
             } catch (err) {
               console.warn("[history] gagal mengecilkan gambar dari storage", err);
-              return { ...entry, image: entry.image.slice(0, 200_000) };
+              image = image.slice(0, 200_000);
             }
           }
-          return entry;
+          const normalized: SessionEntry = {
+            id: entry.id,
+            image,
+            result: upgraded,
+          };
+          return normalized;
         }),
       );
       if (!cancelled) {
@@ -477,6 +605,7 @@ useEffect(() => {
 
       const pointLine = (point: ManifestPoint) =>
         `[${indicatorMeta[point.indicator].label}] ${point.title}: ${point.description}`;
+      const moodSnippet = getMoodSnippet(result.expression.baseLabel);
       const sourceLine =
         result.meta.source === "fallback"
           ? "Mode fallback: analisis disusun dari template ekspresi karena model utama tidak tersedia."
@@ -486,6 +615,8 @@ useEffect(() => {
 
       addSection("Ekspresi Saat Ini", [
         sourceLine,
+        `Mood terdeteksi: ${moodSnippet.title}`,
+        moodSnippet.message,
         `${result.expression.headline} (confidence ${Math.round(result.expression.confidence * 100)}%)`,
         result.expression.energyTone,
         result.expression.personalityHighlight,
@@ -501,15 +632,25 @@ useEffect(() => {
         addSection("Manifesting Masa Depan", masaDepanBullets);
       }
 
+      const jurusanUtama = result.rekomendasiJurusan.utama;
       const rekomendasiBullets = [
-        `Pilihan sekolah utama: ${result.rekomendasiSekolah.tipe}`,
-        ...result.rekomendasiSekolah.alasan.map(pointLine),
-        `Langkah cepat: ${result.rekomendasiSekolah.langkahCepat}`,
-        ...result.rekomendasiSekolah.kebiasaanPendukung.map(
+        `Jurusan utama: ${jurusanUtama.nama} (${jurusanUtama.kode})`,
+        ...jurusanUtama.alasan.map(pointLine),
+        `Langkah fokus: ${jurusanUtama.langkahFokus}`,
+        ...jurusanUtama.kebiasaanPendukung.map(
           (item) => `Kebiasaan pendukung: ${item}`,
         ),
       ];
-      addSection("Rekomendasi Sekolah", rekomendasiBullets);
+      if (result.rekomendasiJurusan.alternatif.length > 0) {
+        rekomendasiBullets.push(
+          "Alternatif jurusan:",
+          ...result.rekomendasiJurusan.alternatif.map(
+            (alt) =>
+              `- ${alt.nama} (${alt.kode}): ${alt.catatan}`,
+          ),
+        );
+      }
+      addSection("Rekomendasi Jurusan", rekomendasiBullets);
 
       doc.save(`face-reading-${Date.now()}.pdf`);
       setActionMessage("PDF berhasil diunduh.");
@@ -529,11 +670,15 @@ useEffect(() => {
       result.meta.source === "fallback"
         ? "Catatan: mode fallback digunakan karena model utama sedang sibuk; insight berasal dari template ekspresi."
         : result.meta.cached
-          ? "Catatan: hasil ditampilkan ulang dari cache analisis sebelumnya."
-          : "Catatan: hasil ini diproses langsung oleh AI saat foto diambil.";
+        ? "Catatan: hasil ditampilkan ulang dari cache analisis sebelumnya."
+        : "Catatan: hasil ini diproses langsung oleh AI saat foto diambil.";
+    const moodSnippet = getMoodSnippet(result.expression.baseLabel);
+    const jurusanUtama = result.rekomendasiJurusan.utama;
 
     const textSummary = [
       "Hasil Face Reading:",
+      `• Mood: ${moodSnippet.title}`,
+      `• Catatan mood: ${moodSnippet.message}`,
       `• Ekspresi: ${result.expression.headline} (yakin ${confidencePercent}%)`,
       `• Energi: ${result.expression.energyTone}`,
       `• Personalitas: ${result.expression.personalityHighlight}`,
@@ -544,15 +689,24 @@ useEffect(() => {
       ),
       "• Manifesting Masa Depan:",
       ...result.manifesting.masaDepan.map((point) => `   - ${pointLine(point)}`),
-      `• Rekomendasi Sekolah (${result.rekomendasiSekolah.tipe}):`,
-      ...result.rekomendasiSekolah.alasan.map(
+      `• Jurusan utama: ${jurusanUtama.nama} (${jurusanUtama.kode})`,
+      ...jurusanUtama.alasan.map(
         (point) => `   - ${pointLine(point)}`,
       ),
-      `• Langkah cepat: ${result.rekomendasiSekolah.langkahCepat}`,
+      `• Langkah fokus: ${jurusanUtama.langkahFokus}`,
       "• Kebiasaan pendukung:",
-      ...result.rekomendasiSekolah.kebiasaanPendukung.map(
+      ...jurusanUtama.kebiasaanPendukung.map(
         (item) => `   - ${item}`,
       ),
+      ...(result.rekomendasiJurusan.alternatif.length > 0
+        ? [
+            "• Alternatif jurusan:",
+            ...result.rekomendasiJurusan.alternatif.map(
+              (alt) =>
+                `   - ${alt.nama} (${alt.kode}): ${alt.catatan}`,
+            ),
+          ]
+        : []),
       `Dibuat pada: ${new Date(result.generatedAt).toLocaleString("id-ID")}`,
     ].join("\n");
 
@@ -653,13 +807,20 @@ useEffect(() => {
       ctx.restore();
 
       if (faceImage) {
-        const photoWidth = STORY_WIDTH - 240;
-        const photoHeight = photoWidth * (9 / 16);
+        const maxPhotoWidth = STORY_WIDTH - 280;
+        const maxPhotoHeight = 520;
+        const scale = Math.min(
+          maxPhotoWidth / faceImage.width,
+          maxPhotoHeight / faceImage.height,
+          1,
+        );
+        const photoWidth = faceImage.width * scale;
+        const photoHeight = faceImage.height * scale;
         const photoX = (STORY_WIDTH - photoWidth) / 2;
-        const photoY = 180;
+        const photoY = 200;
         ctx.save();
-        ctx.shadowColor = `rgba(15, 23, 42, ${0.45 + glow * 0.2})`;
-        ctx.shadowBlur = 60;
+        ctx.shadowColor = `rgba(15, 23, 42, ${0.35 + glow * 0.18})`;
+        ctx.shadowBlur = 48;
         ctx.beginPath();
         ctx.roundRect(photoX, photoY, photoWidth, photoHeight, 36);
         ctx.closePath();
@@ -721,6 +882,26 @@ useEffect(() => {
         40,
       );
 
+      const storyMood = getMoodSnippet(result.expression.baseLabel);
+      ctx.font = "28px 'Helvetica Neue', Arial, sans-serif";
+      ctx.fillStyle = "rgba(125, 211, 252, 0.95)";
+      cursorY = drawWrappedText(
+        `${storyMood.title} ${storyMood.emoji}`,
+        120,
+        cursorY + 18,
+        STORY_WIDTH - 240,
+        36,
+      );
+      ctx.font = "26px 'Helvetica Neue', Arial, sans-serif";
+      ctx.fillStyle = "rgba(255,255,255,0.86)";
+      cursorY = drawWrappedText(
+        storyMood.message,
+        120,
+        cursorY + 6,
+        STORY_WIDTH - 240,
+        34,
+      );
+
       const drawPointSection = (
         title: string,
         points: ManifestPoint[],
@@ -753,16 +934,17 @@ useEffect(() => {
         result.manifesting.masaDepan,
         cursorY + 12,
       );
+      const storyJurusan = result.rekomendasiJurusan.utama;
       cursorY = drawPointSection(
-        `Rekomendasi ${result.rekomendasiSekolah.tipe}`,
-        result.rekomendasiSekolah.alasan,
+        `Jurusan Utama ${storyJurusan.nama}`,
+        storyJurusan.alasan,
         cursorY + 12,
       );
 
       ctx.font = "28px 'Helvetica Neue', Arial, sans-serif";
       ctx.fillStyle = "rgba(255,255,255,0.92)";
       cursorY = drawWrappedText(
-        `Langkah cepat: ${result.rekomendasiSekolah.langkahCepat}`,
+        `Langkah fokus: ${storyJurusan.langkahFokus}`,
         120,
         cursorY + 8,
         STORY_WIDTH - 240,
@@ -771,9 +953,9 @@ useEffect(() => {
 
       ctx.font = "24px 'Helvetica Neue', Arial, sans-serif";
       ctx.fillStyle = "rgba(255,255,255,0.75)";
-      drawWrappedText(
+      cursorY = drawWrappedText(
         "Kebiasaan pendukung: " +
-          result.rekomendasiSekolah.kebiasaanPendukung
+          storyJurusan.kebiasaanPendukung
             .slice(0, 2)
             .map((item) => `• ${item}`)
             .join("  "),
@@ -782,6 +964,21 @@ useEffect(() => {
         STORY_WIDTH - 240,
         34,
       );
+      if (result.rekomendasiJurusan.alternatif.length > 0) {
+        ctx.font = "24px 'Helvetica Neue', Arial, sans-serif";
+        ctx.fillStyle = "rgba(255,255,255,0.68)";
+        cursorY = drawWrappedText(
+          "Alternatif: " +
+            result.rekomendasiJurusan.alternatif
+              .slice(0, 2)
+              .map((alt) => `${alt.nama} (${alt.kode}) - ${alt.catatan}`)
+              .join(" | "),
+          120,
+          cursorY + 16,
+          STORY_WIDTH - 240,
+          34,
+        );
+      }
 
       ctx.fillStyle = "rgba(255,255,255,0.55)";
       ctx.fillRect(96, STORY_HEIGHT - 160, STORY_WIDTH - 192, 2);
@@ -1245,6 +1442,23 @@ useEffect(() => {
                         </div>
                       </div>
 
+                      {(() => {
+                        const moodSnippet = getMoodSnippet(result.expression.baseLabel);
+                        return (
+                          <div className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 dark:border-sky-500/50 dark:bg-sky-900/30 dark:text-sky-100">
+                            <span className="font-semibold uppercase tracking-wide">
+                              {moodSnippet.title}
+                            </span>
+                            <span className="ml-2 text-xs font-semibold text-sky-600 dark:text-sky-300">
+                              {moodSnippet.emoji}
+                            </span>
+                            <p className="mt-1 text-sm leading-relaxed">
+                              {moodSnippet.message}
+                            </p>
+                          </div>
+                        );
+                      })()}
+
                       <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
                         <div
                           className="h-full rounded-full bg-emerald-500 transition-[width] duration-500 dark:bg-emerald-400"
@@ -1260,14 +1474,21 @@ useEffect(() => {
                         />
                       </div>
 
-                      <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                        Model mendeteksi label dasar{" "}
-                        <span className="font-semibold uppercase tracking-wide">
-                          {result.expression.baseLabel}
-                        </span>{" "}
-                        dengan keyakinan sekitar{" "}
-                        {Math.round(result.expression.baseConfidence * 100)}%.
-                      </p>
+                      {(() => {
+                        const moodSnippet = getMoodSnippet(result.expression.baseLabel);
+                        return (
+                          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                            Mood terdeteksi:{" "}
+                            <span className="font-semibold">{moodSnippet.title}</span>{" "}
+                            (label model{" "}
+                            <span className="font-semibold uppercase tracking-wide">
+                              {result.expression.baseLabel}
+                            </span>
+                            ) dengan keyakinan sekitar{" "}
+                            {Math.round(result.expression.baseConfidence * 100)}%.
+                          </p>
+                        );
+                      })()}
                     </div>
                   </section>
                   <section className="flex flex-col gap-4 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
@@ -1367,14 +1588,15 @@ useEffect(() => {
                   <section className="space-y-4 rounded-lg border border-emerald-500/40 bg-emerald-50 p-4 shadow-sm dark:border-emerald-500/40 dark:bg-emerald-950/30">
                     <div className="flex flex-col gap-2">
                       <h3 className="text-base font-semibold text-emerald-900 dark:text-emerald-200">
-                        Rekomendasi Sekolah
+                        Rekomendasi Jurusan
                       </h3>
                       <p className="text-sm font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
-                        {result.rekomendasiSekolah.tipe}
+                        Jurusan utama: {result.rekomendasiJurusan.utama.nama} (
+                        {result.rekomendasiJurusan.utama.kode})
                       </p>
                     </div>
                     <div className="grid gap-3">
-                      {result.rekomendasiSekolah.alasan.map((point, idx) => {
+                      {result.rekomendasiJurusan.utama.alasan.map((point, idx) => {
                         const meta = indicatorMeta[point.indicator];
                         const Icon = meta.icon;
                         return (
@@ -1402,10 +1624,10 @@ useEffect(() => {
                     <Separator className="border-emerald-200 dark:border-emerald-800" />
                     <div>
                       <h4 className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">
-                        Langkah Cepat
+                        Langkah Fokus
                       </h4>
                       <p className="mt-1 text-sm text-emerald-900/80 dark:text-emerald-200">
-                        {result.rekomendasiSekolah.langkahCepat}
+                        {result.rekomendasiJurusan.utama.langkahFokus}
                       </p>
                     </div>
                     <div>
@@ -1413,13 +1635,31 @@ useEffect(() => {
                         Kebiasaan Pendukung
                       </h4>
                       <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-emerald-900/80 dark:text-emerald-200">
-                        {result.rekomendasiSekolah.kebiasaanPendukung.map(
+                        {result.rekomendasiJurusan.utama.kebiasaanPendukung.map(
                           (item, idx) => (
                             <li key={`${item}-${idx}`}>{item}</li>
                           ),
                         )}
                       </ul>
                     </div>
+                    {result.rekomendasiJurusan.alternatif.length > 0 ? (
+                      <div>
+                        <h4 className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">
+                          Alternatif Jurusan
+                        </h4>
+                        <ul className="mt-2 space-y-2 text-sm text-emerald-900/80 dark:text-emerald-200">
+                          {result.rekomendasiJurusan.alternatif.map((alt) => (
+                            <li key={`${alt.kode}-${alt.nama}`} className="rounded-md border border-emerald-200/60 bg-white/80 p-3 dark:border-emerald-800/40 dark:bg-emerald-950/40">
+                              <span className="font-semibold">{alt.nama}</span>{" "}
+                              <span className="text-xs uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                                ({alt.kode})
+                              </span>
+                              <p className="mt-1 text-sm">{alt.catatan}</p>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
                   </section>
                 </div>
               ) : null}
@@ -1574,13 +1814,21 @@ useEffect(() => {
                             },
                           )}
                         </span>
-                        <span>{entry.result.rekomendasiSekolah.tipe}</span>
+                        <span>{entry.result.rekomendasiJurusan.utama.kode}</span>
                       </div>
                     </div>
                     <div className="flex flex-1 flex-col justify-between gap-2 p-4">
                       <p className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
                         {entry.result.expression.headline}
                       </p>
+                      {(() => {
+                        const moodSnippet = getMoodSnippet(entry.result.expression.baseLabel);
+                        return (
+                          <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">
+                            Mood: {moodSnippet.title}
+                          </p>
+                        );
+                      })()}
                       <div className="flex flex-wrap items-center gap-1">
                         {entry.result.meta.source === "fallback" && (
                           <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-900 dark:bg-amber-500/20 dark:text-amber-100">

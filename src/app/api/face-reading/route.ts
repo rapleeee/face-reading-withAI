@@ -20,6 +20,19 @@ const EXPRESSION_LABELS: Record<string, string> = {
 const DEFAULT_EXPRESSION =
   "Ekspresi wajah dominan tidak terdeteksi dengan jelas. Coba ambil ulang foto dengan pencahayaan lebih terang dan wajah menghadap kamera.";
 
+const MAJOR_LABELS = {
+  RPL: "Rekayasa Perangkat Lunak",
+  DKV: "Desain Komunikasi Visual",
+  TKJ: "Teknik Komputer dan Jaringan",
+} as const;
+type MajorCode = keyof typeof MAJOR_LABELS;
+const MAJOR_CODES = Object.keys(MAJOR_LABELS) as Array<MajorCode>;
+const DEFAULT_MAJOR_NOTES: Record<MajorCode, string> = {
+  RPL: "Cocok untuk pemikir analitis yang senang membangun solusi digital.",
+  DKV: "Selaras bagi yang ekspresif dan ingin menyalurkan kreativitas visual.",
+  TKJ: "Pas untuk pribadi teknis yang suka merakit dan menjaga sistem teknologi.",
+};
+
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 6;
 const CACHE_TTL_MS = 10 * 60 * 1000;
@@ -58,11 +71,19 @@ type AiStructuredResult = {
     pekerjaanKarir?: Array<ManifestingPoint>;
     masaDepan?: Array<ManifestingPoint>;
   };
-  rekomendasiSekolah?: {
-    tipe?: "SMK" | "SMA";
-    alasan?: Array<ManifestingPoint>;
-    langkahCepat?: string;
-    kebiasaanPendukung?: string[];
+  rekomendasiJurusan?: {
+    utama?: {
+      kode?: string;
+      nama?: string;
+      alasan?: Array<ManifestingPoint>;
+      langkahFokus?: string;
+      kebiasaanPendukung?: string[];
+    };
+    alternatif?: Array<{
+      kode?: string;
+      nama?: string;
+      catatan?: string;
+    }>;
   };
 };
 
@@ -77,6 +98,543 @@ const createPoint = (
   title: string,
   description: string,
 ): ManifestingPoint => ({ indicator, title, description });
+
+const DEFAULT_MAJOR_POINTS: Record<MajorCode, ManifestingPoint[]> = {
+  RPL: [
+    createPoint(
+      "strength",
+      "Logika terstruktur",
+      "Mood yang stabil menandakan kemampuan menganalisis pola dan membangun solusi bertahap.",
+    ),
+    createPoint(
+      "opportunity",
+      "Eksperimen digital",
+      "Gunakan rasa ingin tahu untuk mencoba membuat aplikasi atau automasi sederhana.",
+    ),
+  ],
+  DKV: [
+    createPoint(
+      "strength",
+      "Ekspresi kreatif",
+      "Energi ekspresif cocok diterjemahkan menjadi karya visual dan storytelling kuat.",
+    ),
+    createPoint(
+      "opportunity",
+      "Sensitivitas estetika",
+      "Asah kepekaan warna dan komposisi lewat latihan visual harian.",
+    ),
+  ],
+  TKJ: [
+    createPoint(
+      "strength",
+      "Ketekunan teknis",
+      "Mood fokus menunjukkan ketelitian tinggi saat memecahkan masalah perangkat.",
+    ),
+    createPoint(
+      "opportunity",
+      "Problem solving nyata",
+      "Gunakan rasa penasaran untuk membongkar dan memahami cara kerja jaringan.",
+    ),
+  ],
+};
+
+const DEFAULT_MAJOR_FOCUS: Record<
+  MajorCode,
+  { langkah: string; kebiasaan: string[] }
+> = {
+  RPL: {
+    langkah:
+      "Luangkan 30 menit per hari untuk latihan logika atau coding dasar di platform gratis.",
+    kebiasaan: [
+      "Catat ide masalah yang ingin kamu pecahkan lalu coba terjemahkan ke konsep aplikasi.",
+      "Ikut komunitas pemrograman pemula seminggu sekali untuk review kode sederhana.",
+    ],
+  },
+  DKV: {
+    langkah:
+      "Buat moodboard mingguan dari referensi visual untuk melatih rasa estetika.",
+    kebiasaan: [
+      "Lakukan sketsa cepat 10 menit setiap hari dengan tema berbeda.",
+      "Unggah karya ke media sosial atau forum desain untuk meminta umpan balik.",
+    ],
+  },
+  TKJ: {
+    langkah:
+      "Kerjakan proyek mini jaringan atau perakitan perangkat setiap pekan dan dokumentasikan prosesnya.",
+    kebiasaan: [
+      "Tulis checklist troubleshooting setiap kali menemukan masalah teknis.",
+      "Ikut kanal komunitas teknologi untuk berdiskusi minimal dua kali seminggu.",
+    ],
+  },
+};
+
+type FallbackTemplate = {
+  energyTone: string;
+  personality: string;
+  major: MajorCode;
+  karir: ManifestingPoint[];
+  masaDepan: ManifestingPoint[];
+  alasan?: ManifestingPoint[];
+  langkah?: string;
+  kebiasaan?: string[];
+  alternatifNotes?: Partial<Record<MajorCode, string>>;
+  confidenceModifier?: number;
+};
+
+const FALLBACK_TEMPLATES: Record<string, FallbackTemplate> = {
+  default: {
+    energyTone:
+      "Energi wajah terlihat stabil; gunakan untuk menjaga ritme belajar konsisten.",
+    personality:
+      "Karakter adaptif dan tangguh, tinggal menguatkan keberanian tampil.",
+    major: "RPL",
+    karir: [
+      createPoint(
+        "strength",
+        "Kekuatan fokus diri",
+        "Ekspresi menandakan kemampuan menjaga perhatian sehingga mudah mengerjakan tugas berbasis analisis.",
+      ),
+      createPoint(
+        "opportunity",
+        "Latih komunikasi",
+        "Coba rutin latihan presentasi singkat agar ide tersampaikan dengan percaya diri.",
+      ),
+    ],
+    masaDepan: [
+      createPoint(
+        "opportunity",
+        "Perluas jejaring pembelajaran",
+        "Ikut komunitas belajar daring untuk bertukar wawasan dan menjaga motivasi.",
+      ),
+      createPoint(
+        "warning",
+        "Jaga keseimbangan emosi",
+        "Sisihkan waktu istirahat terjadwal supaya pikiran tetap jernih saat mengambil keputusan besar.",
+      ),
+    ],
+    alasan: [
+      createPoint(
+        "strength",
+        "Fondasi logika kuat",
+        "Jurusan RPL membiasakan pemikiran terstruktur saat membangun aplikasi atau solusi digital.",
+      ),
+      createPoint(
+        "opportunity",
+        "Eksplorasi proyek",
+        "Lingkungan RPL memberi ruang mencoba banyak proyek supaya potensimu terbukti nyata.",
+      ),
+    ],
+    confidenceModifier: -0.15,
+    alternatifNotes: {
+      DKV: "Jika ingin menonjolkan sisi visual dan storytelling, DKV bisa jadi ruang mengekspresikan emosi.",
+      TKJ: "Bila senang membongkar hardware dan jaringan, TKJ menawarkan tantangan teknis langsung.",
+    },
+  },
+  neutral: {
+    energyTone:
+      "Ekspresi netral menggambarkan kestabilan dan kesiapan menerima pelajaran baru.",
+    personality:
+      "Karakter fleksibel, mudah menyesuaikan dengan berbagai situasi belajar.",
+    major: "RPL",
+    karir: [
+      createPoint(
+        "strength",
+        "Analisis konsisten",
+        "Ketelitianmu membantu merancang alur kerja aplikasi tanpa mudah terdistraksi.",
+      ),
+      createPoint(
+        "opportunity",
+        "Kolaborasi digital",
+        "Libatkan teman untuk membuat proyek sederhana agar kemampuan tim semakin matang.",
+      ),
+    ],
+    masaDepan: [
+      createPoint(
+        "opportunity",
+        "Spesialis solusi",
+        "Bidang pengembangan produk digital memberi banyak jalur peningkatan karier.",
+      ),
+      createPoint(
+        "warning",
+        "Jaga gairah belajar",
+        "Konsisten cari tantangan baru agar tidak terjebak rutinitas yang monoton.",
+      ),
+    ],
+    alternatifNotes: {
+      DKV: "Jika ingin atmosfer lebih ekspresif, DKV menawarkan eksplorasi visual yang menyenangkan.",
+      TKJ: "TKJ cocok bila kamu ingin memahami seluk-beluk infrastruktur teknologi secara langsung.",
+    },
+  },
+  happiness: {
+    energyTone:
+      "Energi wajah ceria dan hangat, mudah membangun situasi kolaboratif.",
+    personality:
+      "Karakter supel serta ekspresif, cocok memimpin aktivitas kreatif.",
+    major: "DKV",
+    karir: [
+      createPoint(
+        "strength",
+        "Karisma tim",
+        "Aura positif memudahkan mengambil peran koordinasi dalam proyek bersama.",
+      ),
+      createPoint(
+        "opportunity",
+        "Salurkan ide visual",
+        "Eksplor kelas multimedia atau desain untuk menyalurkan imajinasi.",
+      ),
+    ],
+    masaDepan: [
+      createPoint(
+        "opportunity",
+        "Bangun portofolio",
+        "Kumpulkan hasil karya tiap bulan sebagai bukti konsistensi kreativitas.",
+      ),
+      createPoint(
+        "warning",
+        "Atur prioritas",
+        "Gunakan to-do list harian agar energi tidak terpecah ke terlalu banyak aktivitas.",
+      ),
+    ],
+    alasan: [
+      createPoint(
+        "strength",
+        "Studio kreatif lengkap",
+        "Jurusan DKV menyediakan fasilitas desain dan mentor kreatif untuk menyalurkan imajinasi.",
+      ),
+      createPoint(
+        "opportunity",
+        "Portofolio kuat",
+        "Tiap proyek desain bisa dijadikan portofolio untuk menembus industri kreatif sejak dini.",
+      ),
+    ],
+    langkah:
+      "Susun portofolio mini berisi proyek sekolah atau karya mandiri dalam 3 bulan ke depan.",
+    kebiasaan: [
+      "Dokumentasikan progres proyek mingguan dalam bentuk foto atau video pendek.",
+      "Ikut komunitas kreatif daring untuk bertukar ide dan feedback.",
+    ],
+    alternatifNotes: {
+      RPL: "Jika ingin menyalurkan ide ke aplikasi interaktif, RPL bisa jadi kombinasi yang seru.",
+      TKJ: "Energi positifmu juga bisa menghidupkan tim teknis di jurusan TKJ.",
+    },
+  },
+  anger: {
+    energyTone:
+      "Energi tegas menonjol, cocok untuk peran yang membutuhkan keberanian keputusan.",
+    personality:
+      "Karakter kompetitif dan berorientasi hasil, butuh kanal produktif agar energi tersalurkan.",
+    major: "TKJ",
+    karir: [
+      createPoint(
+        "strength",
+        "Kecepatan respon",
+        "Ketegasanmu membantu menyelesaikan tugas operasional di bawah tekanan.",
+      ),
+      createPoint(
+        "warning",
+        "Kelola emosi",
+        "Latih teknik napas atau olahraga ringan sebelum mengambil keputusan penting.",
+      ),
+    ],
+    masaDepan: [
+      createPoint(
+        "opportunity",
+        "Peran kepemimpinan",
+        "Ambil posisi koordinator proyek untuk menyalurkan insting memimpin.",
+      ),
+      createPoint(
+        "warning",
+        "Bangun empati",
+        "Sisihkan waktu mendengar masukan tim agar keputusan lebih diterima.",
+      ),
+    ],
+    alasan: [
+      createPoint(
+        "strength",
+        "Tantangan teknis nyata",
+        "TKJ memberi banyak praktik lapangan untuk menyalurkan energi kompetitifmu.",
+      ),
+      createPoint(
+        "opportunity",
+        "Simulasi industri",
+        "Kegiatan prakerin menyiapkan mental menghadapi tekanan kerja sebenarnya.",
+      ),
+    ],
+    langkah:
+      "Terapkan metode GTD (Getting Things Done) sederhana untuk menjaga fokus prioritas.",
+    kebiasaan: [
+      "Mulai hari dengan 5 menit pernapasan atau peregangan.",
+      "Catat pemicu emosi dan siapkan respon alternatif yang lebih tenang.",
+    ],
+    alternatifNotes: {
+      RPL: "Jika ingin menyalurkan ketegasan lewat problem solving digital, RPL bisa dicoba.",
+      DKV: "Energi besar juga dapat diarahkan membuat konten berpengaruh di DKV.",
+    },
+  },
+  sadness: {
+    energyTone:
+      "Energi terlihat lembut dan empatik, mudah menangkap perasaan orang lain.",
+    personality:
+      "Karakter peduli, cocok pada peran pelayanan atau pendampingan.",
+    major: "RPL",
+    karir: [
+      createPoint(
+        "strength",
+        "Empati tinggi",
+        "Kepekaan emosimu memberi nilai tambah pada bidang sosial atau pendidikan.",
+      ),
+      createPoint(
+        "opportunity",
+        "Bangun daya juang",
+        "Perkuat ketahanan mental melalui journaling dan dukungan komunitas.",
+      ),
+    ],
+    masaDepan: [
+      createPoint(
+        "opportunity",
+        "Solusi berdampak",
+        "Menciptakan aplikasi bantu belajar atau kesehatan mental bisa jadi fokus menarik.",
+      ),
+      createPoint(
+        "warning",
+        "Jaga semangat",
+        "Tetapkan penghargaan diri setiap kali menyelesaikan modul atau proyek.",
+      ),
+    ],
+    alasan: [
+      createPoint(
+        "strength",
+        "Kolaborasi empatik",
+        "Proyek RPL menuntut kerja tim sehingga empati kamu menjadi keunggulan.",
+      ),
+      createPoint(
+        "opportunity",
+        "Transformasi ide jadi solusi",
+        "Mood sensitif mempermudahmu merancang fitur yang benar-benar membantu pengguna.",
+      ),
+    ],
+    kebiasaan: [
+      "Refleksikan emosi dan ide solusi dalam jurnal setiap malam.",
+      "Libatkan teman untuk pair programming ringan seminggu sekali.",
+    ],
+    alternatifNotes: {
+      DKV: "Jika ingin menyalurkan emosi lewat visual, DKV bisa menjadi ruang berekspresi.",
+      TKJ: "TKJ cocok bila kamu ingin fokus ke sistem yang menjamin kenyamanan banyak orang.",
+    },
+  },
+  surprise: {
+    energyTone:
+      "Ekspresi penuh rasa ingin tahu, cepat menangkap informasi baru.",
+    personality:
+      "Karakter eksploratif dan adaptif, senang mencoba hal berbeda.",
+    major: "RPL",
+    karir: [
+      createPoint(
+        "strength",
+        "Respons cepat",
+        "Kamu sigap mengatasi perubahan, cocok di bidang teknologi atau event.",
+      ),
+      createPoint(
+        "opportunity",
+        "Struktur belajar",
+        "Susun kerangka belajar agar rasa penasaran tetap terarah.",
+      ),
+    ],
+    masaDepan: [
+      createPoint(
+        "opportunity",
+        "Inovasi berkelanjutan",
+        "Bidang startup atau riset terapan memberi ruang eksplorasi tanpa batas.",
+      ),
+      createPoint(
+        "warning",
+        "Hindari loncat-loncat",
+        "Tentukan satu fokus utama tiap semester agar hasil terasa nyata.",
+      ),
+    ],
+    alasan: [
+      createPoint(
+        "strength",
+        "Eksperimen terencana",
+        "RPL memungkinkanmu menguji ide inovatif melalui prototipe digital.",
+      ),
+      createPoint(
+        "opportunity",
+        "Jalur portofolio",
+        "Setiap aplikasi kecil bisa dijadikan studi kasus untuk menonjolkan rasa ingin tahu.",
+      ),
+    ],
+    langkah:
+      "Ambil satu proyek ekstrakurikuler dan jadikan studi kasus portofolio.",
+    kebiasaan: [
+      "Gunakan papan ide untuk menampung inspirasi sebelum dieksekusi.",
+      "Review pembelajaran tiap Jumat untuk memilih ide teratas minggu berikutnya.",
+    ],
+    alternatifNotes: {
+      DKV: "Jika imajinasi visualmu menguat, DKV memberi ruang eksplorasi konsep unik.",
+      TKJ: "TKJ cocok bila kamu ingin mendalami perangkat yang mendukung ide-ide besar.",
+    },
+  },
+  disgust: {
+    energyTone:
+      "Ekspresi menunjukkan standar tinggi dan keinginan menjaga kualitas.",
+    personality:
+      "Karakter perfeksionis, teliti terhadap detail dan lingkungan.",
+    major: "TKJ",
+    karir: [
+      createPoint(
+        "strength",
+        "Kontrol kualitas",
+        "Kepekaanmu terhadap detail cocok di bidang kuliner, kecantikan, atau produksi.",
+      ),
+      createPoint(
+        "opportunity",
+        "Kelola ekspektasi",
+        "Belajar membagi standar: mana yang wajib tinggi dan mana yang bisa fleksibel.",
+      ),
+    ],
+    masaDepan: [
+      createPoint(
+        "opportunity",
+        "Spesialis kualitas",
+        "Pertimbangkan profesi QC, UX, atau desain interior yang menuntut cita rasa.",
+      ),
+      createPoint(
+        "warning",
+        "Hindari overkritik",
+        "Gunakan sudut pandang apresiasi sebelum memberi evaluasi pada orang lain.",
+      ),
+    ],
+    alasan: [
+      createPoint(
+        "strength",
+        "Kerapian sistem",
+        "TKJ membiasakan standar check list dan dokumentasi sehingga perfeksimu tersalurkan.",
+      ),
+      createPoint(
+        "opportunity",
+        "Praktik bertahap",
+        "Setiap proyek jaringan melatihmu menilai kualitas konfigurasi secara rinci.",
+      ),
+    ],
+    langkah:
+      "Buat checklist mutu pribadi sebelum memulai dan selesai mengerjakan proyek.",
+    kebiasaan: [
+      "Latihan sensory check selama 10 menit tiap hari.",
+      "Berikan apresiasi diri atas progres kecil untuk menjaga motivasi.",
+    ],
+    alternatifNotes: {
+      RPL: "Jika ingin mengontrol kualitas software, RPL memberi ruang testing dan QA.",
+      DKV: "Ketekunan detailmu juga bermanfaat menciptakan karya visual yang presisi di DKV.",
+    },
+  },
+  fear: {
+    energyTone:
+      "Ekspresi berhati-hati menunjukkan kebutuhan akan rasa aman sebelum melangkah.",
+    personality:
+      "Karakter analitis namun membutuhkan dorongan kepercayaan diri.",
+    major: "TKJ",
+    karir: [
+      createPoint(
+        "strength",
+        "Detil dan teliti",
+        "Kehati-hatianmu cocok di bidang riset, akuntansi, atau kontrol kualitas.",
+      ),
+      createPoint(
+        "opportunity",
+        "Bangun keberanian",
+        "Mulai ambil proyek kecil bertahap untuk melatih percaya diri.",
+      ),
+    ],
+    masaDepan: [
+      createPoint(
+        "opportunity",
+        "Perencanaan matang",
+        "Profesi analis data atau perencana keuangan selaras dengan gaya berpikir sistematismu.",
+      ),
+      createPoint(
+        "warning",
+        "Atasi overthinking",
+        "Gunakan teknik 5-4-3-2-1 atau journaling untuk meredam kekhawatiran.",
+      ),
+    ],
+    alasan: [
+      createPoint(
+        "strength",
+        "Sistem yang aman",
+        "TKJ mengajarkan cara menjaga jaringan tetap stabil sehingga selaras dengan kebutuhanmu akan rasa aman.",
+      ),
+      createPoint(
+        "opportunity",
+        "Proyek bertahap",
+        "Pembelajaran praktikum memungkinkanmu menaikkan percaya diri setahap demi setahap.",
+      ),
+    ],
+    langkah:
+      "Susun rencana mingguan berisi tiga prioritas utama agar fokus mudah dijaga.",
+    kebiasaan: [
+      "Gunakan daftar afirmasi positif setiap pagi.",
+      "Cek-in emosi di tengah hari dengan skala 1-5 lalu sesuaikan aktivitas.",
+    ],
+    alternatifNotes: {
+      RPL: "Jika ingin belajar membangun solusi yang membantu orang banyak, RPL memberimu pijakan aman.",
+      DKV: "Menyalurkan rasa hati-hati lewat karya visual di DKV bisa menjadi terapi kreatif.",
+    },
+  },
+  contempt: {
+    energyTone:
+      "Ekspresi kritis menandakan intuisi tajam dalam menilai kondisi.",
+    personality:
+      "Karakter analitis dan tegas, cocok menjadi penasehat atau strategi.",
+    major: "RPL",
+    karir: [
+      createPoint(
+        "strength",
+        "Analisis tajam",
+        "Kemampuan menilai cepat membantu di bidang hukum, debat, atau riset kebijakan.",
+      ),
+      createPoint(
+        "warning",
+        "Bangun empati komunikatif",
+        "Sertakan langkah solutif saat menyampaikan kritik agar penerimaan lebih baik.",
+      ),
+    ],
+    masaDepan: [
+      createPoint(
+        "opportunity",
+        "Peran strategi",
+        "Pertimbangkan profesi konsultan, analis bisnis, atau content strategist.",
+      ),
+      createPoint(
+        "warning",
+        "Jaga fleksibilitas",
+        "Latih melihat sisi positif agar tidak terjebak pada penilaian yang terlalu keras.",
+      ),
+    ],
+    alasan: [
+      createPoint(
+        "strength",
+        "Logika tajam",
+        "RPL memfasilitasi pola pikir kritis lewat debugging dan analisis sistem.",
+      ),
+      createPoint(
+        "opportunity",
+        "Solusi aplikatif",
+        "Setiap kritik bisa diterjemahkan menjadi fitur baru pada aplikasi yang kamu bangun.",
+      ),
+    ],
+    langkah:
+      "Setiap memberi evaluasi, sertakan minimal dua apresiasi dan satu alternatif solusi.",
+    kebiasaan: [
+      "Latihan menulis opini dengan format sandwich feedback.",
+      "Ikuti konten atau buku tentang empati dan komunikasi asertif.",
+    ],
+    alternatifNotes: {
+      DKV: "Jika ingin mengasah kritik visual, DKV memberimu ruang menilai estetika.",
+      TKJ: "TKJ cocok bila kamu ingin memastikan standar teknis dan keamanan tertata rapi.",
+    },
+  },
+};
 
 type AnalysisPayload = {
   expression: {
@@ -99,20 +657,44 @@ type AnalysisPayload = {
       indicator: "strength" | "opportunity" | "warning";
     }>;
   };
-  rekomendasiSekolah: {
-    tipe: "SMK" | "SMA";
-    alasan: Array<{
-      title: string;
-      description: string;
-      indicator: "strength" | "opportunity" | "warning";
+  rekomendasiJurusan: {
+    utama: {
+      kode: string;
+      nama: string;
+      alasan: Array<{
+        title: string;
+        description: string;
+        indicator: "strength" | "opportunity" | "warning";
+      }>;
+      langkahFokus: string;
+      kebiasaanPendukung: string[];
+    };
+    alternatif: Array<{
+      kode: string;
+      nama: string;
+      catatan: string;
     }>;
-    langkahCepat: string;
-    kebiasaanPendukung: string[];
   };
   meta: {
     source: "ai" | "fallback";
     cached?: boolean;
   };
+};
+
+const isMajorCode = (value: string): value is MajorCode =>
+  Object.prototype.hasOwnProperty.call(MAJOR_LABELS, value);
+
+const normalizeMajorCode = (value?: string): MajorCode => {
+  const upper = (value ?? "").toUpperCase().trim();
+  return isMajorCode(upper) ? (upper as MajorCode) : "RPL";
+};
+
+const resolveMajorName = (code?: string, providedName?: string): string => {
+  const majorCode = normalizeMajorCode(code);
+  if (providedName && providedName.trim()) {
+    return providedName.trim();
+  }
+  return MAJOR_LABELS[majorCode];
 };
 
 export async function POST(req: Request) {
@@ -201,6 +783,11 @@ export async function POST(req: Request) {
           indicator: item.indicator ?? "opportunity",
         }));
 
+    const sanitizeStringArray = (items?: Array<string>) =>
+      (items ?? [])
+        .map((entry) => entry?.trim())
+        .filter((entry): entry is string => Boolean(entry));
+
     const manifestingKarir = normalizePoints(
       aiResult.manifesting?.pekerjaanKarir,
     );
@@ -208,7 +795,75 @@ export async function POST(req: Request) {
       aiResult.manifesting?.masaDepan,
     );
 
-    const alasanSekolah = normalizePoints(aiResult.rekomendasiSekolah?.alasan);
+    const jurusanUtamaRaw = aiResult.rekomendasiJurusan?.utama ?? {};
+    const utamaKode = normalizeMajorCode(jurusanUtamaRaw.kode);
+    const utamaNama = resolveMajorName(jurusanUtamaRaw.kode, jurusanUtamaRaw.nama);
+
+    let alasanJurusan = normalizePoints(jurusanUtamaRaw.alasan);
+    if (alasanJurusan.length === 0) {
+      alasanJurusan = normalizePoints(DEFAULT_MAJOR_POINTS[utamaKode]);
+    }
+
+    const langkahFokus =
+      jurusanUtamaRaw.langkahFokus?.trim() ??
+      DEFAULT_MAJOR_FOCUS[utamaKode].langkah;
+
+    let kebiasaanPendukung = sanitizeStringArray(
+      jurusanUtamaRaw.kebiasaanPendukung,
+    );
+    if (kebiasaanPendukung.length === 0) {
+      kebiasaanPendukung = [...DEFAULT_MAJOR_FOCUS[utamaKode].kebiasaan];
+    }
+
+    const alternatifDariAi = (aiResult.rekomendasiJurusan?.alternatif ?? [])
+      .map((item) => {
+        const catatan = item?.catatan?.trim();
+        if (!catatan) {
+          return null;
+        }
+        const code = normalizeMajorCode(item?.kode);
+        return {
+          kode: code,
+          nama: resolveMajorName(item?.kode, item?.nama),
+          catatan,
+        };
+      })
+      .filter(
+        (
+          item,
+        ): item is {
+          kode: MajorCode;
+          nama: string;
+          catatan: string;
+        } => Boolean(item),
+      );
+
+    const alternatif: Array<{
+      kode: string;
+      nama: string;
+      catatan: string;
+    }> = [];
+    const seenCodes = new Set<MajorCode>([utamaKode]);
+
+    for (const alt of alternatifDariAi) {
+      if (seenCodes.has(alt.kode)) continue;
+      alternatif.push({
+        kode: alt.kode,
+        nama: alt.nama,
+        catatan: alt.catatan,
+      });
+      seenCodes.add(alt.kode);
+    }
+
+    for (const code of MAJOR_CODES) {
+      if (seenCodes.has(code)) continue;
+      alternatif.push({
+        kode: code,
+        nama: MAJOR_LABELS[code],
+        catatan: DEFAULT_MAJOR_NOTES[code],
+      });
+      seenCodes.add(code);
+    }
 
     const confidenceModifier =
       aiResult.expressionSummary?.confidenceModifier ?? 0;
@@ -234,17 +889,15 @@ export async function POST(req: Request) {
         pekerjaanKarir: manifestingKarir,
         masaDepan: manifestingMasaDepan,
       },
-      rekomendasiSekolah: {
-        tipe: aiResult.rekomendasiSekolah?.tipe === "SMK" ? "SMK" : "SMA",
-        alasan: alasanSekolah,
-        langkahCepat:
-          aiResult.rekomendasiSekolah?.langkahCepat ??
-          "Tetapkan jadwal belajar mingguan dan eksplor kegiatan ekstrakurikuler untuk menguatkan potensi.",
-        kebiasaanPendukung:
-          aiResult.rekomendasiSekolah?.kebiasaanPendukung ?? [
-            "Bangun rutinitas belajar terjadwal setiap pekan.",
-            "Cari mentor atau komunitas yang mendukung minat utama.",
-          ],
+      rekomendasiJurusan: {
+        utama: {
+          kode: utamaKode,
+          nama: utamaNama,
+          alasan: alasanJurusan,
+          langkahFokus,
+          kebiasaanPendukung,
+        },
+        alternatif,
       },
       meta: {
         source: metaSource,
@@ -320,435 +973,70 @@ function buildFallbackAnalysis(
   expression: ExpressionInsight,
 ): AiStructuredResult {
   const label = expression.label.toLowerCase();
+  const template = FALLBACK_TEMPLATES[label] ?? FALLBACK_TEMPLATES.default;
+  const major = template.major ?? "RPL";
 
-  const fallback: {
-    energyTone: string;
-    personality: string;
-    schoolType: "SMK" | "SMA";
-    karir: ManifestingPoint[];
-    masaDepan: ManifestingPoint[];
-    alasan: ManifestingPoint[];
-    langkah: string;
-    kebiasaan: string[];
-    confidenceModifier: number;
-  } = {
-    energyTone:
-      "Energi wajah terlihat stabil; gunakan untuk menjaga ritme belajar konsisten.",
-    personality:
-      "Karakter adaptif dan tangguh, tinggal menguatkan keberanian tampil.",
-    schoolType: "SMA",
-    karir: [
-      createPoint(
-        "strength",
-        "Kekuatan fokus diri",
-        "Ekspresi menandakan kemampuan menjaga perhatian sehingga mudah mengerjakan tugas berbasis analisis.",
-      ),
-      createPoint(
-        "opportunity",
-        "Latih komunikasi",
-        "Coba rutin latihan presentasi singkat agar ide tersampaikan dengan percaya diri.",
-      ),
-    ],
-    masaDepan: [
-      createPoint(
-        "opportunity",
-        "Perluas jejaring pembelajaran",
-        "Ikut komunitas belajar daring untuk bertukar wawasan dan menjaga motivasi.",
-      ),
-      createPoint(
-        "warning",
-        "Jaga keseimbangan emosi",
-        "Sisihkan waktu istirahat terjadwal supaya pikiran tetap jernih saat mengambil keputusan besar.",
-      ),
-    ],
-    alasan: [
-      createPoint(
-        "strength",
-        "Fondasi akademik luas",
-        "Jalur SMA membantu menguatkan dasar teori yang mendukung pilihan studi tinggi.",
-      ),
-      createPoint(
-        "opportunity",
-        "Eksplorasi organisasi",
-        "Aktif di OSIS atau komunitas riset memberi ruang melatih kepemimpinan bertahap.",
-      ),
-    ],
-    langkah:
-      "Tentukan target nilai tiap semester lalu evaluasi progres setiap akhir pekan.",
-    kebiasaan: [
-      "Catat refleksi mood dan belajar selama 5 menit setiap malam.",
-      "Ikuti diskusi kelompok minimal seminggu sekali untuk mengasah komunikasi.",
-    ],
-    confidenceModifier: -0.15,
-  };
-
-  switch (label) {
-    case "happiness":
-      fallback.energyTone =
-        "Energi wajah ceria dan hangat, mudah membangun situasi kolaboratif.";
-      fallback.personality =
-        "Karakter supel serta ekspresif, cocok memimpin aktivitas kreatif.";
-      fallback.schoolType = "SMK";
-      fallback.karir = [
-        createPoint(
-          "strength",
-          "Karisma tim",
-          "Aura positif memudahkan mengambil peran koordinasi dalam proyek bersama.",
-        ),
-        createPoint(
-          "opportunity",
-          "Salurkan ide visual",
-          "Eksplor kelas multimedia atau desain untuk menyalurkan imajinasi.",
-        ),
-      ];
-      fallback.masaDepan = [
-        createPoint(
-          "opportunity",
-          "Bangun portofolio",
-          "Kumpulkan hasil karya tiap bulan sebagai bukti konsistensi kreativitas.",
-        ),
-        createPoint(
-          "warning",
-          "Atur prioritas",
-          "Gunakan to-do list harian agar energi tidak terpecah ke terlalu banyak aktivitas.",
-        ),
-      ];
-      fallback.alasan = [
-        createPoint(
-          "strength",
-          "Praktik langsung",
-          "SMK menyediakan studio dan praktik industri untuk menyalurkan kreativitasmu.",
-        ),
-        createPoint(
-          "opportunity",
-          "Relasi profesi",
-          "Magang singkat membantu memahami realita kerja kreatif sejak dini.",
-        ),
-      ];
-      fallback.langkah =
-        "Susun portofolio mini berisi proyek sekolah atau karya mandiri dalam 3 bulan ke depan.";
-      fallback.kebiasaan = [
-        "Dokumentasikan progres proyek mingguan dalam bentuk foto atau video pendek.",
-        "Ikut komunitas kreatif daring untuk bertukar ide dan feedback.",
-      ];
-      break;
-    case "anger":
-      fallback.energyTone =
-        "Energi tegas menonjol, cocok untuk peran yang membutuhkan keberanian keputusan.";
-      fallback.personality =
-        "Karakter kompetitif dan berorientasi hasil, butuh kanal produktif agar energi tersalurkan.";
-      fallback.schoolType = "SMK";
-      fallback.karir = [
-        createPoint(
-          "strength",
-          "Kecepatan respon",
-          "Ketegasanmu membantu menyelesaikan tugas operasional di bawah tekanan.",
-        ),
-        createPoint(
-          "warning",
-          "Kelola emosi",
-          "Latih teknik napas atau olahraga ringan sebelum mengambil keputusan penting.",
-        ),
-      ];
-      fallback.masaDepan = [
-        createPoint(
-          "opportunity",
-          "Peran kepemimpinan",
-          "Ambil posisi koordinator proyek untuk menyalurkan insting memimpin.",
-        ),
-        createPoint(
-          "warning",
-          "Bangun empati",
-          "Sisihkan waktu mendengar masukan tim agar keputusan lebih diterima.",
-        ),
-      ];
-      fallback.alasan = [
-        createPoint(
-          "strength",
-          "Skill teknis cepat",
-          "SMK memberi banyak praktik sehingga energi kompetitifmu tersalurkan.",
-        ),
-        createPoint(
-          "opportunity",
-          "Koneksi industri",
-          "Kegiatan prakerin membuka peluang mengenal kultur kerja sebenarnya.",
-        ),
-      ];
-      fallback.langkah =
-        "Terapkan metode GTD (Getting Things Done) sederhana untuk menjaga fokus prioritas.";
-      fallback.kebiasaan = [
-        "Mulai hari dengan 5 menit pernapasan atau peregangan.",
-        "Catat pemicu emosi dan siapkan respon alternatif yang lebih tenang.",
-      ];
-      break;
-    case "sadness":
-      fallback.energyTone =
-        "Energi terlihat lembut dan empatik, mudah menangkap perasaan orang lain.";
-      fallback.personality =
-        "Karakter peduli, cocok pada peran pelayanan atau pendampingan.";
-      fallback.schoolType = "SMA";
-      fallback.karir = [
-        createPoint(
-          "strength",
-          "Empati tinggi",
-          "Kepekaan emosimu memberi nilai tambah pada bidang sosial atau pendidikan.",
-        ),
-        createPoint(
-          "opportunity",
-          "Bangun daya juang",
-          "Perkuat ketahanan mental melalui journaling dan dukungan komunitas.",
-        ),
-      ];
-      fallback.masaDepan = [
-        createPoint(
-          "opportunity",
-          "Peran konselor",
-          "Pertimbangkan jalur psikologi, keperawatan, atau bimbingan belajar.",
-        ),
-        createPoint(
-          "warning",
-          "Self-care rutin",
-          "Tetapkan ritual self-care tiap pekan agar empati tidak membuatmu kelelahan.",
-        ),
-      ];
-      fallback.alasan = [
-        createPoint(
-          "strength",
-          "Pendalaman teori",
-          "SMA memberi ruang mengeksplor ilmu sosial dan humaniora lebih luas.",
-        ),
-        createPoint(
-          "opportunity",
-          "Aktivitas relawan",
-          "Ikut kegiatan sosial sekolah untuk menyalurkan rasa peduli.",
-        ),
-      ];
-      fallback.langkah =
-        "Buat daftar dukungan (teman/guru) yang bisa dihubungi saat membutuhkan semangat.";
-      fallback.kebiasaan = [
-        "Tuliskan tiga hal yang kamu syukuri setiap malam.",
-        "Latihan mindfulness 5 menit setelah bangun tidur.",
-      ];
-      break;
-    case "fear":
-      fallback.energyTone =
-        "Ekspresi berhati-hati menunjukkan kebutuhan akan rasa aman sebelum melangkah.";
-      fallback.personality =
-        "Karakter analitis namun membutuhkan dorongan kepercayaan diri.";
-      fallback.schoolType = "SMA";
-      fallback.karir = [
-        createPoint(
-          "strength",
-          "Detil dan teliti",
-          "Kehati-hatianmu cocok di bidang riset, akuntansi, atau kontrol kualitas.",
-        ),
-        createPoint(
-          "opportunity",
-          "Bangun keberanian",
-          "Mulai ambil proyek kecil bertahap untuk melatih percaya diri.",
-        ),
-      ];
-      fallback.masaDepan = [
-        createPoint(
-          "opportunity",
-          "Perencanaan matang",
-          "Profesi analis data atau perencana keuangan selaras dengan gaya berpikir sistematismu.",
-        ),
-        createPoint(
-          "warning",
-          "Atasi overthinking",
-          "Gunakan teknik 5-4-3-2-1 atau journaling untuk meredam kekhawatiran.",
-        ),
-      ];
-      fallback.alasan = [
-        createPoint(
-          "strength",
-          "Tahap eksploratif",
-          "SMA memberi waktu mengenali minat tanpa tekanan spesialisasi dini.",
-        ),
-        createPoint(
-          "opportunity",
-          "Pembinaan akademik",
-          "Bisa mengikuti bimbingan belajar terstruktur untuk menguatkan rasa percaya diri.",
-        ),
-      ];
-      fallback.langkah =
-        "Susun rencana mingguan berisi tiga prioritas utama agar fokus mudah dijaga.";
-      fallback.kebiasaan = [
-        "Gunakan daftar afirmasi positif setiap pagi.",
-        "Cek-in emosi di tengah hari dengan skala 1-5 lalu sesuaikan aktivitas.",
-      ];
-      break;
-    case "surprise":
-      fallback.energyTone =
-        "Energi penuh rasa ingin tahu, cepat menangkap informasi baru.";
-      fallback.personality =
-        "Karakter eksploratif dan adaptif, senang mencoba hal berbeda.";
-      fallback.schoolType = "SMK";
-      fallback.karir = [
-        createPoint(
-          "strength",
-          "Respons cepat",
-          "Kamu sigap mengatasi perubahan, cocok di bidang teknologi atau event.",
-        ),
-        createPoint(
-          "opportunity",
-          "Struktur belajar",
-          "Susun kerangka belajar agar rasa penasaran tetap terarah.",
-        ),
-      ];
-      fallback.masaDepan = [
-        createPoint(
-          "opportunity",
-          "Inovasi berkelanjutan",
-          "Bidang startup atau riset terapan memberi ruang eksplorasi tanpa batas.",
-        ),
-        createPoint(
-          "warning",
-          "Hindari loncat-loncat",
-          "Tentukan satu fokus utama tiap semester agar hasil terasa nyata.",
-        ),
-      ];
-      fallback.alasan = [
-        createPoint(
-          "strength",
-          "Belajar berbasis proyek",
-          "SMK memberi pengalaman langsung sehingga rasa ingin tahumu tersalurkan.",
-        ),
-        createPoint(
-          "opportunity",
-          "Jejaring industri",
-          "Bisa membangun koneksi profesional sejak dini lewat praktik kerja lapangan.",
-        ),
-      ];
-      fallback.langkah =
-        "Ambil satu proyek ekstrakurikuler dan jadikan studi kasus portofolio.";
-      fallback.kebiasaan = [
-        "Gunakan papan ide untuk menampung inspirasi sebelum diekseksi.",
-        "Review pembelajaran tiap Jumat untuk memilih ide teratas minggu berikutnya.",
-      ];
-      break;
-    case "disgust":
-      fallback.energyTone =
-        "Ekspresi menunjukkan standar tinggi dan keinginan menjaga kualitas.";
-      fallback.personality =
-        "Karakter perfeksionis, teliti terhadap detail dan lingkungan.";
-      fallback.schoolType = "SMK";
-      fallback.karir = [
-        createPoint(
-          "strength",
-          "Kontrol kualitas",
-          "Kepekaanmu terhadap detail cocok di bidang kuliner, kecantikan, atau produksi.",
-        ),
-        createPoint(
-          "opportunity",
-          "Kelola ekspektasi",
-          "Belajar membagi standar: mana yang wajib tinggi dan mana yang bisa fleksibel.",
-        ),
-      ];
-      fallback.masaDepan = [
-        createPoint(
-          "opportunity",
-          "Spesialis kualitas",
-          "Pertimbangkan profesi QC, UX, atau desain interior yang menuntut cita rasa.",
-        ),
-        createPoint(
-          "warning",
-          "Hindari overkritik",
-          "Gunakan sudut pandang apresiasi sebelum memberi evaluasi pada orang lain.",
-        ),
-      ];
-      fallback.alasan = [
-        createPoint(
-          "strength",
-          "Workshop intensif",
-          "SMK menyediakan ruang praktik detail untuk menyalurkan standar mutu.",
-        ),
-        createPoint(
-          "opportunity",
-          "Mentor profesional",
-          "Bisa belajar langsung dari praktisi sehingga standar tinggi terjaga.",
-        ),
-      ];
-      fallback.langkah =
-        "Buat checklist mutu pribadi sebelum memulai dan selesai mengerjakan proyek.";
-      fallback.kebiasaan = [
-        "Latihan sensory check selama 10 menit tiap hari.",
-        "Berikan apresiasi diri atas progres kecil untuk menjaga motivasi.",
-      ];
-      break;
-    case "contempt":
-      fallback.energyTone =
-        "Ekspresi kritis menandakan intuisi tajam dalam menilai kondisi.";
-      fallback.personality =
-        "Karakter analitis dan tegas, cocok menjadi penasehat atau strategi.";
-      fallback.schoolType = "SMA";
-      fallback.karir = [
-        createPoint(
-          "strength",
-          "Analisis tajam",
-          "Kemampuan menilai cepat membantu di bidang hukum, debat, atau riset kebijakan.",
-        ),
-        createPoint(
-          "warning",
-          "Bangun empati komunikatif",
-          "Sertakan langkah solutif saat menyampaikan kritik agar penerimaan lebih baik.",
-        ),
-      ];
-      fallback.masaDepan = [
-        createPoint(
-          "opportunity",
-          "Peran strategi",
-          "Pertimbangkan profesi konsultan, analis bisnis, atau content strategist.",
-        ),
-        createPoint(
-          "warning",
-          "Jaga fleksibilitas",
-          "Latih melihat sisi positif agar tidak terjebak pada penilaian yang terlalu keras.",
-        ),
-      ];
-      fallback.alasan = [
-        createPoint(
-          "strength",
-          "Basis teori luas",
-          "SMA memberi bekal logika dan literasi untuk mendukung kemampuan kritismu.",
-        ),
-        createPoint(
-          "opportunity",
-          "Forum debat",
-          "Aktif di klub debat melatih penyampaian kritik secara elegan.",
-        ),
-      ];
-      fallback.langkah =
-        "Setiap memberi evaluasi, sertakan minimal dua apresiasi dan satu alternatif solusi.";
-      fallback.kebiasaan = [
-        "Latihan menulis opini dengan format sandwich feedback.",
-        "Ikuti konten atau buku tentang empati dan komunikasi asertif.",
-      ];
-      break;
-    default:
-      break;
+  const alternatifNotes = new Map<MajorCode, string>();
+  if (template.alternatifNotes) {
+    for (const [code, note] of Object.entries(template.alternatifNotes)) {
+      const normalized = normalizeMajorCode(code);
+      if (note) {
+        alternatifNotes.set(normalized, note);
+      }
+    }
   }
+
+  for (const code of MAJOR_CODES) {
+    if (code === major) continue;
+    if (!alternatifNotes.has(code)) {
+      alternatifNotes.set(code, DEFAULT_MAJOR_NOTES[code]);
+    }
+  }
+
+  const langkah =
+    template.langkah?.trim() ?? DEFAULT_MAJOR_FOCUS[major].langkah;
+  const kebiasaan =
+    template.kebiasaan && template.kebiasaan.length > 0
+      ? template.kebiasaan.map((entry) => entry.trim()).filter(Boolean)
+      : [...DEFAULT_MAJOR_FOCUS[major].kebiasaan];
+
+  const alasan =
+    template.alasan && template.alasan.length > 0
+      ? template.alasan
+      : DEFAULT_MAJOR_POINTS[major];
+
+  const alternatif = Array.from(alternatifNotes.entries()).map(
+    ([code, note]) => ({
+      kode: code,
+      nama: MAJOR_LABELS[code],
+      catatan: note,
+    }),
+  );
 
   return {
     expressionSummary: {
       headline: expression.narrative,
-      energyTone: fallback.energyTone,
-      personalityHighlight: fallback.personality,
-      confidenceModifier: fallback.confidenceModifier,
+      energyTone: template.energyTone,
+      personalityHighlight: template.personality,
+      confidenceModifier: template.confidenceModifier ?? -0.1,
     },
     manifesting: {
-      pekerjaanKarir: fallback.karir,
-      masaDepan: fallback.masaDepan,
+      pekerjaanKarir: template.karir,
+      masaDepan: template.masaDepan,
     },
-    rekomendasiSekolah: {
-      tipe: fallback.schoolType,
-      alasan: fallback.alasan,
-      langkahCepat: fallback.langkah,
-      kebiasaanPendukung: fallback.kebiasaan,
+    rekomendasiJurusan: {
+      utama: {
+        kode: major,
+        nama: MAJOR_LABELS[major],
+        alasan,
+        langkahFokus: langkah,
+        kebiasaanPendukung: kebiasaan,
+      },
+      alternatif,
     },
   };
 }
+
 
 async function generateFaceReading(
   token: string,
@@ -773,16 +1061,23 @@ async function generateFaceReading(
     '        {"title": "string", "description": "maks 2 kalimat", "indicator": "strength|opportunity|warning"}',
     "     ]",
     "  },",
-    '  "rekomendasiSekolah": {',
-    '     "tipe": "SMK atau SMA",',
-    '     "alasan": [',
-    '        {"title": "string", "description": "maks 2 kalimat", "indicator": "strength|opportunity|warning"}',
-    "     ],",
-    '     "langkahCepat": "1 kalimat praktis",',
-    '     "kebiasaanPendukung": ["bullet singkat", "..."]',
+    '  "rekomendasiJurusan": {',
+    '     "utama": {',
+    '        "kode": "RPL atau DKV atau TKJ",',
+    '        "nama": "string",',
+    '        "alasan": [',
+    '           {"title": "string", "description": "maks 2 kalimat", "indicator": "strength|opportunity|warning"}',
+    "        ],",
+    '        "langkahFokus": "1 kalimat praktis",',
+    '        "kebiasaanPendukung": ["bullet singkat", "..."]',
+    "     },",
+    '     "alternatif": [',
+    '        {"kode": "RPL|DKV|TKJ", "nama": "string", "catatan": "1 kalimat"}',
+    "     ]",
     "  }",
     "}",
     "Pastikan setiap indikator selaras dengan tone positif, hindari klaim medis.",
+    "Batasi kode jurusan hanya pada RPL, DKV, atau TKJ.",
   ].join(" ");
 
   const userPrompt = [
@@ -792,8 +1087,9 @@ async function generateFaceReading(
     `- Hash singkat gambar (untuk referensi saja): ${input.imageHint}.`,
     "- Gunakan ekspresi sebagai dasar untuk menyusun manifesting karier dan masa depan.",
     "- Pertimbangkan gambaran umum face reading modern (potensi, karakter, peluang).",
-    "- Pilih rekomendasi sekolah SMK atau SMA sesuai narasi manifesting.",
-    "- Langkah cepat harus aplikatif untuk pelajar (misal: fokus jurusan, kegiatan, kebiasaan belajar).",
+    "- Fokuskan rekomendasi jurusan pada RPL, DKV, atau TKJ. Pilih satu sebagai jurusan utama dan jadikan dua lainnya sebagai alternatif dengan catatan singkat yang relevan.",
+    "- Langkah fokus harus aplikatif untuk pelajar (misal: aktivitas penguatan keterampilan, proyek mini, kebiasaan belajar).",
+    "- Kebiasaan pendukung gunakan format bullet pendek yang mendukung jurusan utama.",
     "Jika informasi ekspresi kurang jelas, buat analisis umum yang tetap relevan dan positif.",
   ].join("\n");
 
