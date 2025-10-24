@@ -45,6 +45,20 @@ type ManifestPoint = {
   indicator: IndicatorLevel;
 };
 
+type AgeRange = {
+  min: number | null;
+  max: number | null;
+};
+
+type AgeInsight = {
+  headline: string;
+  narrative: string;
+  confidence: number;
+  label: string;
+  estimated: number | null;
+  range: AgeRange;
+};
+
 type FaceReadingResult = {
   expression: {
     headline: string;
@@ -54,6 +68,7 @@ type FaceReadingResult = {
     baseLabel: string;
     baseConfidence: number;
   };
+  age: AgeInsight;
   manifesting: {
     pekerjaanKarir: ManifestPoint[];
     masaDepan: ManifestPoint[];
@@ -79,7 +94,11 @@ type FaceReadingResult = {
   };
 };
 
-type LegacyFaceReadingResult = Omit<FaceReadingResult, "rekomendasiJurusan"> & {
+type LegacyFaceReadingResult = Omit<
+  FaceReadingResult,
+  "rekomendasiJurusan" | "age"
+> & {
+  age?: AgeInsight;
   rekomendasiSekolah: {
     tipe: "SMK" | "SMA";
     alasan: ManifestPoint[];
@@ -101,6 +120,16 @@ type SessionEntry = {
 };
 
 const INIT_RESULT: FaceReadingResult | null = null;
+
+const DEFAULT_AGE_VIEW: AgeInsight = {
+  headline: "Perkiraan usia sekitar 16–19 tahun",
+  narrative:
+    "AI memberikan tebakan santai di rentang remaja akhir. Jadikan sebagai referensi ringan saja, bukan data resmi.",
+  confidence: 0.34,
+  label: "16-19",
+  estimated: 17,
+  range: { min: 16, max: 19 },
+};
 
 const indicatorMeta: Record<
   IndicatorLevel,
@@ -201,8 +230,9 @@ const MOOD_SNIPPETS: Record<string, MoodSnippet> = {
     emoji: "c:",
   },
   unknown: {
-    title: "Mood Belum Jelas",
-    message: "Coba ambil foto lagi dengan pencahayaan lebih terang supaya AI bisa membaca ekspresi dengan jelas.",
+    title: "Mood Netral Santai",
+    message:
+      "Ekspresimu tampak kalem dan unik, jadi AI menafsirkannya sebagai mood netral santai. Kalau mau hasil lebih tajam boleh ulang foto, tapi kamu sudah good vibe kok.",
     emoji: "*",
   },
 };
@@ -213,11 +243,78 @@ const getMoodSnippet = (label?: string): MoodSnippet => {
   return MOOD_SNIPPETS[key] ?? MOOD_SNIPPETS.unknown;
 };
 
+const formatAgeRangeLabel = (age: AgeInsight) => {
+  if (age.range.min != null && age.range.max != null) {
+    return `${age.range.min}–${age.range.max}`;
+  }
+  if (age.range.min != null && age.range.max == null) {
+    return `${age.range.min}+`;
+  }
+  if (age.estimated != null) {
+    return `${age.estimated}`;
+  }
+  return "Belum jelas";
+};
+
+const normalizeAgeInsight = (age?: Partial<AgeInsight> | null): AgeInsight => {
+  const confidence =
+    typeof age?.confidence === "number" && Number.isFinite(age.confidence)
+      ? Math.max(0, Math.min(1, age.confidence))
+      : DEFAULT_AGE_VIEW.confidence;
+  const estimated =
+    typeof age?.estimated === "number" && Number.isFinite(age.estimated)
+      ? Math.round(age.estimated)
+      : DEFAULT_AGE_VIEW.estimated;
+  const headline =
+    typeof age?.headline === "string" && age.headline.trim().length > 0
+      ? age.headline.trim()
+      : DEFAULT_AGE_VIEW.headline;
+  const narrative =
+    typeof age?.narrative === "string" && age.narrative.trim().length > 0
+      ? age.narrative.trim()
+      : DEFAULT_AGE_VIEW.narrative;
+  const label =
+    typeof age?.label === "string" && age.label.trim().length > 0
+      ? age.label.trim()
+      : DEFAULT_AGE_VIEW.label;
+  const range: AgeRange = {
+    min:
+      age &&
+      age.range &&
+      typeof age.range.min === "number" &&
+      Number.isFinite(age.range.min)
+        ? age.range.min
+        : null,
+    max:
+      age &&
+      age.range &&
+      typeof age.range.max === "number" &&
+      Number.isFinite(age.range.max)
+        ? age.range.max
+        : null,
+  };
+  return {
+    headline,
+    narrative,
+    confidence,
+    label,
+    estimated,
+    range,
+  };
+};
+
+const normalizeFaceReading = (
+  result: Omit<FaceReadingResult, "age"> & { age?: Partial<AgeInsight> | null },
+): FaceReadingResult => ({
+  ...result,
+  age: normalizeAgeInsight(result.age),
+});
+
 const upgradeLegacyResult = (
   result: FaceReadingResult | LegacyFaceReadingResult,
 ): FaceReadingResult => {
   if ("rekomendasiJurusan" in result) {
-    return result;
+    return normalizeFaceReading(result);
   }
 
   const { rekomendasiSekolah, ...rest } = result as LegacyFaceReadingResult;
@@ -232,7 +329,7 @@ const upgradeLegacyResult = (
       ? { kode: "TKJ", nama: MAJOR_LABELS.TKJ }
       : { kode: "RPL", nama: MAJOR_LABELS.RPL };
 
-  return {
+  return normalizeFaceReading({
     ...rest,
     rekomendasiJurusan: {
       utama: {
@@ -244,7 +341,7 @@ const upgradeLegacyResult = (
       },
       alternatif: [],
     },
-  };
+  });
 };
 
 async function createThumbnail(dataUrl: string, targetWidth = 360) {
@@ -511,8 +608,9 @@ useEffect(() => {
         throw new Error(detail?.message ?? "Terjadi kesalahan saat analisis.");
       }
 
-      const payload: FaceReadingResult = await response.json();
-      setResult(payload);
+      const payload = (await response.json()) as FaceReadingResult;
+      const normalized = normalizeFaceReading(payload);
+      setResult(normalized);
       if (storyPreview) {
         URL.revokeObjectURL(storyPreview.url);
         setStoryPreview(null);
@@ -523,7 +621,7 @@ useEffect(() => {
         const entry: SessionEntry = {
           id: `${Date.now()}`,
           image: thumb,
-          result: payload,
+          result: normalized,
         };
         setHistory((prev) => {
           const withoutDuplicate = prev.filter(
@@ -621,6 +719,16 @@ useEffect(() => {
         result.expression.energyTone,
         result.expression.personalityHighlight,
       ]);
+      const ageBadge = formatAgeRangeLabel(result.age);
+      const ageLines = [
+        result.age.headline,
+        result.age.narrative,
+        `Rentang usia visual: ${
+          ageBadge === "Belum jelas" ? "belum terbaca" : `${ageBadge} tahun`
+        }`,
+        `Keyakinan model: ${Math.round(result.age.confidence * 100)}%.`,
+      ];
+      addSection("Perkiraan Usia", ageLines);
 
       const pekerjaanBullets = result.manifesting.pekerjaanKarir.map(pointLine);
       if (pekerjaanBullets.length > 0) {
@@ -674,6 +782,8 @@ useEffect(() => {
         : "Catatan: hasil ini diproses langsung oleh AI saat foto diambil.";
     const moodSnippet = getMoodSnippet(result.expression.baseLabel);
     const jurusanUtama = result.rekomendasiJurusan.utama;
+    const ageBadge = formatAgeRangeLabel(result.age);
+    const ageConfidence = Math.round(result.age.confidence * 100);
 
     const textSummary = [
       "Hasil Face Reading:",
@@ -682,6 +792,9 @@ useEffect(() => {
       `• Ekspresi: ${result.expression.headline} (yakin ${confidencePercent}%)`,
       `• Energi: ${result.expression.energyTone}`,
       `• Personalitas: ${result.expression.personalityHighlight}`,
+      `• Perkiraan usia: ${result.age.headline}${
+        ageBadge === "Belum jelas" ? "" : ` (rentang ${ageBadge} th)`
+      } - yakin ${ageConfidence}%.`,
       `• ${sourceSummary}`,
       "• Manifesting Pekerjaan & Karier:",
       ...result.manifesting.pekerjaanKarir.map(
@@ -880,6 +993,28 @@ useEffect(() => {
         cursorY + 8,
         STORY_WIDTH - 240,
         40,
+      );
+
+      const ageBadge = formatAgeRangeLabel(result.age);
+      ctx.font = "26px 'Helvetica Neue', Arial, sans-serif";
+      ctx.fillStyle = "rgba(196, 181, 253, 0.95)";
+      cursorY = drawWrappedText(
+        `Perkiraan usia: ${result.age.headline}${
+          ageBadge === "Belum jelas" ? "" : ` (${ageBadge} th)`
+        } - yakin ${Math.round(result.age.confidence * 100)}%.`,
+        120,
+        cursorY + 12,
+        STORY_WIDTH - 240,
+        36,
+      );
+      ctx.font = "24px 'Helvetica Neue', Arial, sans-serif";
+      ctx.fillStyle = "rgba(221, 214, 254, 0.85)";
+      cursorY = drawWrappedText(
+        result.age.narrative,
+        120,
+        cursorY + 6,
+        STORY_WIDTH - 240,
+        34,
       );
 
       const storyMood = getMoodSnippet(result.expression.baseLabel);
@@ -1443,6 +1578,51 @@ useEffect(() => {
                       </div>
 
                       {(() => {
+                        const badgeLabel = formatAgeRangeLabel(result.age);
+                        const badgeText =
+                          badgeLabel === "Belum jelas"
+                            ? badgeLabel
+                            : `${badgeLabel} th`;
+                        const confidencePercent = Math.round(
+                          result.age.confidence * 100,
+                        );
+                        return (
+                          <div className="rounded-lg border border-indigo-200 bg-indigo-50/80 px-4 py-3 text-sm text-indigo-900 shadow-sm dark:border-indigo-500/40 dark:bg-indigo-900/20 dark:text-indigo-100">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="space-y-1">
+                                <p className="text-xs font-semibold uppercase tracking-wide text-indigo-700 dark:text-indigo-300">
+                                  Perkiraan Usia
+                                </p>
+                                <p className="font-medium leading-relaxed">
+                                  {result.age.headline}
+                                </p>
+                              </div>
+                              <Badge className="bg-indigo-600/90 text-indigo-50 dark:bg-indigo-400 dark:text-indigo-950">
+                                {badgeText}
+                              </Badge>
+                            </div>
+                            <p className="mt-2 text-xs leading-relaxed text-indigo-900/80 dark:text-indigo-100/80">
+                              {result.age.narrative}
+                            </p>
+                            <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-indigo-200/60 dark:bg-indigo-500/20">
+                              <div
+                                className="h-full rounded-full bg-indigo-500 transition-[width] duration-500 dark:bg-indigo-400"
+                                style={{
+                                  width: `${Math.min(
+                                    100,
+                                    Math.max(8, confidencePercent),
+                                  )}%`,
+                                }}
+                              />
+                            </div>
+                            <p className="mt-1 text-[11px] text-indigo-900/70 dark:text-indigo-100/70">
+                              Keyakinan model sekitar {confidencePercent}%.
+                            </p>
+                          </div>
+                        );
+                      })()}
+
+                      {(() => {
                         const moodSnippet = getMoodSnippet(result.expression.baseLabel);
                         return (
                           <div className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 dark:border-sky-500/50 dark:bg-sky-900/30 dark:text-sky-100">
@@ -1826,6 +2006,19 @@ useEffect(() => {
                         return (
                           <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">
                             Mood: {moodSnippet.title}
+                          </p>
+                        );
+                      })()}
+                      {(() => {
+                        const badgeLabel = formatAgeRangeLabel(entry.result.age);
+                        const badgeText =
+                          badgeLabel === "Belum jelas"
+                            ? badgeLabel
+                            : `${badgeLabel} th`;
+                        return (
+                          <p className="text-[11px] text-indigo-600 dark:text-indigo-300">
+                            Usia: {badgeText} (
+                            {Math.round(entry.result.age.confidence * 100)}%)
                           </p>
                         );
                       })()}

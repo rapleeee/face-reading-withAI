@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 
 const HF_MODEL_URL =
   "https://api-inference.huggingface.co/models/nateraw/vision-transformer-emotion-ferplus";
+const HF_AGE_MODEL_URL =
+  "https://api-inference.huggingface.co/models/nateraw/vision-transformer-age-classifier";
 const TOGETHER_URL = "https://api.together.xyz/v1/chat/completions";
 const TOGETHER_MODEL = "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free";
 
@@ -18,7 +20,7 @@ const EXPRESSION_LABELS: Record<string, string> = {
 };
 
 const DEFAULT_EXPRESSION =
-  "Ekspresi wajah dominan tidak terdeteksi dengan jelas. Coba ambil ulang foto dengan pencahayaan lebih terang dan wajah menghadap kamera.";
+  "Ekspresi wajah tampak netral dan tenang; AI menganggapmu menjaga emosi tetap seimbang.";
 
 const MAJOR_LABELS = {
   RPL: "Rekayasa Perangkat Lunak",
@@ -58,6 +60,20 @@ type ExpressionInsight = {
   narrative: string;
   confidence: number;
   label: string;
+};
+
+type AgeRange = {
+  min: number | null;
+  max: number | null;
+};
+
+type AgeInsight = {
+  label: string;
+  confidence: number;
+  estimated: number | null;
+  range: AgeRange;
+  headline: string;
+  narrative: string;
 };
 
 type AiStructuredResult = {
@@ -168,6 +184,271 @@ const DEFAULT_MAJOR_FOCUS: Record<
   },
 };
 
+const AGE_STAGE_DESCRIPTORS: Array<{
+  max: number;
+  label: string;
+  narrative: string;
+  prompt: string;
+}> = [
+  {
+    max: 12,
+    label: "Pra-remaja",
+    narrative:
+      "Fokus pada kebiasaan belajar ringan, eksplorasi minat, dan pendampingan orang tua agar tetap menyenangkan.",
+    prompt: "pra-remaja yang membutuhkan aktivitas eksploratif dan pendampingan intensif",
+  },
+  {
+    max: 15,
+    label: "Remaja awal",
+    narrative:
+      "Sedang memasuki masa SMP; bekali dengan dasar literasi digital, disiplin belajar, dan proyek kecil yang menyenangkan.",
+    prompt: "pelajar SMP yang baru mengeksplorasi minat jurusan",
+  },
+  {
+    max: 18,
+    label: "Remaja akhir",
+    narrative:
+      "Usia SMA/SMK; saat yang tepat untuk menguatkan portofolio, pengalaman organisasi, dan memilih jalur lanjutan.",
+    prompt: "pelajar SMA/SMK yang bersiap memilih jurusan lanjutan",
+  },
+  {
+    max: 24,
+    label: "Dewasa muda",
+    narrative:
+      "Rentang kuliah awal; arahkan pada pengalaman magang, proyek penelitian, dan perluasan jejaring profesional.",
+    prompt: "mahasiswa awal yang menguatkan fondasi karier",
+  },
+  {
+    max: 35,
+    label: "Profesional awal",
+    narrative:
+      "Mulai meniti karier; fokus pada spesialisasi skill, sertifikasi, dan kepemimpinan proyek.",
+    prompt: "profesional muda yang ingin memantapkan spesialisasi",
+  },
+  {
+    max: 50,
+    label: "Profesional madya",
+    narrative:
+      "Tahap mengembangkan peran strategis; perkuat mentoring, manajemen tim, dan keseimbangan hidup.",
+    prompt: "profesional madya yang ingin memperluas peran strategis",
+  },
+  {
+    max: Number.POSITIVE_INFINITY,
+    label: "Mentor berpengalaman",
+    narrative:
+      "Pengalaman matang; saatnya membagikan wawasan, menjadi mentor, dan merancang legacy karya.",
+    prompt: "mentor berpengalaman yang membina generasi berikutnya",
+  },
+];
+
+const DEFAULT_STAGE_DESCRIPTOR = {
+  label: "Rentang belum jelas",
+  narrative:
+    "AI membaca sinyal usia yang unik, jadi tebakan dibuat santai. Jika ingin hasil lebih tajam, boleh coba ulang foto dengan pencahayaan merata.",
+  prompt: "pelajar dengan usia visual yang belum terbaca jelas",
+};
+
+const describeAgeStage = (age: number | null | undefined) => {
+  if (typeof age !== "number" || Number.isNaN(age)) {
+    return DEFAULT_STAGE_DESCRIPTOR;
+  }
+  const descriptor =
+    AGE_STAGE_DESCRIPTORS.find((item) => age <= item.max) ??
+    AGE_STAGE_DESCRIPTORS[AGE_STAGE_DESCRIPTORS.length - 1];
+  return descriptor;
+};
+
+const parseAgeLabelRange = (label: string): AgeRange => {
+  if (!label) {
+    return { min: null, max: null };
+  }
+  const matches = label.match(/\d+/g);
+  if (!matches || matches.length === 0) {
+    if (label.includes("+")) {
+      const plusMatch = label.match(/\d+/);
+      if (plusMatch) {
+        const base = Number(plusMatch[0]);
+        return Number.isFinite(base)
+          ? { min: base, max: null }
+          : { min: null, max: null };
+      }
+    }
+    return { min: null, max: null };
+  }
+  const numbers = matches
+    .map((item) => Number(item))
+    .filter((value) => Number.isFinite(value));
+  if (numbers.length === 0) {
+    return { min: null, max: null };
+  }
+  if (numbers.length === 1) {
+    const value = numbers[0];
+    return { min: value, max: label.includes("+") ? null : value };
+  }
+  const [first, second] = numbers;
+  const min = Math.min(first, second);
+  const max = Math.max(first, second);
+  return { min, max };
+};
+
+const computeEstimatedAge = (
+  range: AgeRange,
+  fallback?: number | null,
+): number | null => {
+  if (range.min != null && range.max != null) {
+    return Math.round((range.min + range.max) / 2);
+  }
+  if (range.min != null) return range.min;
+  if (range.max != null) return range.max;
+  if (typeof fallback === "number" && Number.isFinite(fallback)) {
+    return Math.round(fallback);
+  }
+  return null;
+};
+
+const formatAgeRangeText = (range: AgeRange, estimated: number | null) => {
+  if (range.min != null && range.max != null) {
+    return `${range.min}–${range.max} tahun`;
+  }
+  if (range.min != null && range.max == null) {
+    return `${range.min}+ tahun`;
+  }
+  if (estimated != null) {
+    return `sekitar ${estimated} tahun`;
+  }
+  return "";
+};
+
+const FALLBACK_AGE_PRESETS: Record<
+  string,
+  { range: AgeRange; estimated: number; confidence: number; label: string }
+> = {
+  happiness: {
+    range: { min: 16, max: 20 },
+    estimated: 18,
+    confidence: 0.38,
+    label: "16-20",
+  },
+  surprise: {
+    range: { min: 16, max: 19 },
+    estimated: 17,
+    confidence: 0.36,
+    label: "16-19",
+  },
+  sadness: {
+    range: { min: 17, max: 21 },
+    estimated: 19,
+    confidence: 0.34,
+    label: "17-21",
+  },
+  anger: {
+    range: { min: 18, max: 24 },
+    estimated: 21,
+    confidence: 0.33,
+    label: "18-24",
+  },
+  disgust: {
+    range: { min: 17, max: 23 },
+    estimated: 20,
+    confidence: 0.33,
+    label: "17-23",
+  },
+  fear: {
+    range: { min: 16, max: 22 },
+    estimated: 19,
+    confidence: 0.32,
+    label: "16-22",
+  },
+  contempt: {
+    range: { min: 18, max: 24 },
+    estimated: 21,
+    confidence: 0.35,
+    label: "18-24",
+  },
+  neutral: {
+    range: { min: 16, max: 20 },
+    estimated: 18,
+    confidence: 0.35,
+    label: "16-20",
+  },
+  unknown: {
+    range: { min: 16, max: 19 },
+    estimated: 17,
+    confidence: 0.33,
+    label: "16-19",
+  },
+  default: {
+    range: { min: 16, max: 19 },
+    estimated: 17,
+    confidence: 0.34,
+    label: "16-19",
+  },
+};
+
+const buildFallbackAgeInsight = (
+  expression?: ExpressionInsight | null,
+): AgeInsight => {
+  const key = expression?.label?.toLowerCase() ?? "default";
+  const preset = FALLBACK_AGE_PRESETS[key] ?? FALLBACK_AGE_PRESETS.default;
+  const range = {
+    min: preset.range.min,
+    max: preset.range.max,
+  };
+  const estimated = preset.estimated;
+  const confidence = Math.max(0, Math.min(1, preset.confidence));
+  const headline = buildAgeHeadline(range, estimated);
+  const narrative = buildAgeNarrative(range, estimated, confidence);
+  return {
+    label: preset.label,
+    confidence,
+    estimated,
+    range,
+    headline,
+    narrative,
+  };
+};
+
+const EXPRESSION_MAJOR_AFFINITY: Record<string, MajorCode[]> = {
+  happiness: ["DKV", "RPL", "TKJ"],
+  surprise: ["DKV", "RPL", "TKJ"],
+  sadness: ["RPL", "DKV", "TKJ"],
+  anger: ["TKJ", "RPL", "DKV"],
+  disgust: ["TKJ", "RPL", "DKV"],
+  fear: ["TKJ", "RPL", "DKV"],
+  contempt: ["RPL", "TKJ", "DKV"],
+  neutral: ["RPL", "TKJ", "DKV"],
+  unknown: ["DKV", "RPL", "TKJ"],
+  default: ["RPL", "DKV", "TKJ"],
+};
+
+const buildAgeHeadline = (range: AgeRange, estimated: number | null) => {
+  const formatted = formatAgeRangeText(range, estimated);
+  return formatted
+    ? `Perkiraan usia ${formatted}`
+    : "Perkiraan usia belum terbaca";
+};
+
+const buildAgeNarrative = (
+  range: AgeRange,
+  estimated: number | null,
+  confidence: number,
+) => {
+  const descriptor = describeAgeStage(
+    estimated ?? range.min ?? range.max ?? null,
+  );
+  const rangeText = formatAgeRangeText(range, estimated);
+  const confidenceText =
+    confidence > 0
+      ? `Keyakinan model sekitar ${(confidence * 100).toFixed(0)}%.`
+      : "Model belum yakin dengan hasil ini.";
+
+  if (rangeText) {
+    return `AI memperkirakan usia visual berada di ${rangeText}. ${descriptor.narrative} ${confidenceText} Ingat, tebakan ini hanya referensi santai dan bukan identitas resmi.`;
+  }
+
+  return `${descriptor.narrative} ${confidenceText} Ulangi foto dengan pencahayaan lebih merata agar AI dapat membaca usia lebih baik.`;
+};
+
 type FallbackTemplate = {
   energyTone: string;
   personality: string;
@@ -184,50 +465,50 @@ type FallbackTemplate = {
 const FALLBACK_TEMPLATES: Record<string, FallbackTemplate> = {
   default: {
     energyTone:
-      "Energi wajah terlihat stabil; gunakan untuk menjaga ritme belajar konsisten.",
+      "Energi wajah stabil; manfaatkan untuk menjaga ritme eksplorasi kreatif secara konsisten.",
     personality:
-      "Karakter adaptif dan tangguh, tinggal menguatkan keberanian tampil.",
-    major: "RPL",
+      "Karakter adaptif dan tangguh, tinggal menguatkan keberanian menampilkan karya.",
+    major: "DKV",
     karir: [
       createPoint(
         "strength",
-        "Kekuatan fokus diri",
-        "Ekspresi menandakan kemampuan menjaga perhatian sehingga mudah mengerjakan tugas berbasis analisis.",
+        "Sense visual terarah",
+        "Ekspresimu menunjukkan kemampuan menjaga detail sehingga cocok merancang konten visual yang rapi.",
       ),
       createPoint(
         "opportunity",
-        "Latih komunikasi",
-        "Coba rutin latihan presentasi singkat agar ide tersampaikan dengan percaya diri.",
+        "Perkuat storytelling",
+        "Coba rutin membuat moodboard dan menarasikan ide agar pesan kreatif tersampaikan kuat.",
       ),
     ],
     masaDepan: [
       createPoint(
         "opportunity",
-        "Perluas jejaring pembelajaran",
-        "Ikut komunitas belajar daring untuk bertukar wawasan dan menjaga motivasi.",
+        "Bangun portofolio lintas media",
+        "Eksperimen dengan ilustrasi, motion, dan desain UI supaya identitas kreatif makin terlihat.",
       ),
       createPoint(
         "warning",
-        "Jaga keseimbangan emosi",
-        "Sisihkan waktu istirahat terjadwal supaya pikiran tetap jernih saat mengambil keputusan besar.",
+        "Jaga konsistensi ritme",
+        "Atur jadwal istirahat agar inspirasi tetap segar dan tidak burnout saat menyelesaikan proyek panjang.",
       ),
     ],
     alasan: [
       createPoint(
         "strength",
-        "Fondasi logika kuat",
-        "Jurusan RPL membiasakan pemikiran terstruktur saat membangun aplikasi atau solusi digital.",
+        "Studio kreatif lengkap",
+        "DKV menyediakan laboratorium multimedia dan mentor visual untuk mengasah ide menjadi karya nyata.",
       ),
       createPoint(
         "opportunity",
-        "Eksplorasi proyek",
-        "Lingkungan RPL memberi ruang mencoba banyak proyek supaya potensimu terbukti nyata.",
+        "Eksperimen lintas format",
+        "Setiap mata pelajaran DKV membuka peluang mencoba berbagai media sehingga potensi kreatifmu tidak monoton.",
       ),
     ],
     confidenceModifier: -0.15,
     alternatifNotes: {
-      DKV: "Jika ingin menonjolkan sisi visual dan storytelling, DKV bisa jadi ruang mengekspresikan emosi.",
-      TKJ: "Bila senang membongkar hardware dan jaringan, TKJ menawarkan tantangan teknis langsung.",
+      RPL: "Jika ingin mengemas ide ke aplikasi interaktif, RPL membantumu menerjemahkan konsep ke produk digital.",
+      TKJ: "Bila tertarik pada perangkat dan jaringan, TKJ menawarkan praktik teknis yang melatih ketelitianmu.",
     },
   },
   neutral: {
@@ -235,34 +516,34 @@ const FALLBACK_TEMPLATES: Record<string, FallbackTemplate> = {
       "Ekspresi netral menggambarkan kestabilan dan kesiapan menerima pelajaran baru.",
     personality:
       "Karakter fleksibel, mudah menyesuaikan dengan berbagai situasi belajar.",
-    major: "RPL",
+    major: "TKJ",
     karir: [
       createPoint(
         "strength",
-        "Analisis konsisten",
-        "Ketelitianmu membantu merancang alur kerja aplikasi tanpa mudah terdistraksi.",
+        "Kerapian sistem",
+        "Ketelitianmu membantu menjaga perangkat dan jaringan tetap stabil meski di bawah tekanan.",
       ),
       createPoint(
         "opportunity",
-        "Kolaborasi digital",
-        "Libatkan teman untuk membuat proyek sederhana agar kemampuan tim semakin matang.",
+        "Kolaborasi troubleshooting",
+        "Libatkan teman untuk menyelesaikan kasus jaringan sederhana agar komunikasi teknismu semakin matang.",
       ),
     ],
     masaDepan: [
       createPoint(
         "opportunity",
-        "Spesialis solusi",
-        "Bidang pengembangan produk digital memberi banyak jalur peningkatan karier.",
+        "Spesialis infrastruktur digital",
+        "Bidang jaringan, cloud dasar, atau keamanan memberi banyak jalur peningkatan karier.",
       ),
       createPoint(
         "warning",
-        "Jaga gairah belajar",
-        "Konsisten cari tantangan baru agar tidak terjebak rutinitas yang monoton.",
+        "Terus update teknologi",
+        "Jadwalkan belajar rutin agar tidak tertinggal perkembangan tools dan standar terbaru.",
       ),
     ],
     alternatifNotes: {
-      DKV: "Jika ingin atmosfer lebih ekspresif, DKV menawarkan eksplorasi visual yang menyenangkan.",
-      TKJ: "TKJ cocok bila kamu ingin memahami seluk-beluk infrastruktur teknologi secara langsung.",
+      RPL: "Jika ingin menulis automasi untuk solusi perangkat, RPL bisa membantu memadukan logika dan sistem.",
+      DKV: "Untuk menyalurkan sisi kreatif, DKV menawarkan eksplorasi visual yang segar.",
     },
   },
   happiness: {
@@ -645,6 +926,14 @@ type AnalysisPayload = {
     baseLabel: string;
     baseConfidence: number;
   };
+  age: {
+    headline: string;
+    narrative: string;
+    confidence: number;
+    label: string;
+    estimated: number | null;
+    range: AgeRange;
+  };
   manifesting: {
     pekerjaanKarir: Array<{
       title: string;
@@ -757,6 +1046,7 @@ export async function POST(req: Request) {
     const imageBuffer = Buffer.from(base64Data, "base64");
 
     const expression = await detectExpression(hfToken, imageBuffer);
+    const ageInsight = await detectAge(hfToken, imageBuffer, expression);
     let aiResult: AiStructuredResult | null = null;
     let metaSource: "ai" | "fallback" = "ai";
 
@@ -764,6 +1054,7 @@ export async function POST(req: Request) {
       aiResult = await generateFaceReading(togetherToken, {
         expression,
         imageHint: base64Data.slice(0, 64),
+        age: ageInsight,
       });
     } catch (err) {
       console.error("[face-reading] together fallback:", err);
@@ -885,6 +1176,14 @@ export async function POST(req: Request) {
         baseLabel: expression.label,
         baseConfidence: expression.confidence,
       },
+      age: {
+        headline: ageInsight.headline,
+        narrative: ageInsight.narrative,
+        confidence: ageInsight.confidence,
+        label: ageInsight.label,
+        estimated: ageInsight.estimated,
+        range: ageInsight.range,
+      },
       manifesting: {
         pekerjaanKarir: manifestingKarir,
         masaDepan: manifestingMasaDepan,
@@ -939,8 +1238,8 @@ async function detectExpression(
     console.error("[huggingface] error:", detail);
     return {
       narrative: DEFAULT_EXPRESSION,
-      confidence: 0.35,
-      label: "unknown",
+      confidence: 0.42,
+      label: "neutral",
     };
   }
 
@@ -952,8 +1251,8 @@ async function detectExpression(
   if (!Array.isArray(data) || data.length === 0) {
     return {
       narrative: DEFAULT_EXPRESSION,
-      confidence: 0.35,
-      label: "unknown",
+      confidence: 0.4,
+      label: "neutral",
     };
   }
 
@@ -967,6 +1266,127 @@ async function detectExpression(
     confidence: Math.max(0, Math.min(1, top.score)),
     label: top.label,
   };
+}
+
+async function detectAge(
+  token: string,
+  image: Buffer,
+  expression?: ExpressionInsight,
+): Promise<AgeInsight> {
+  try {
+    const response = await fetch(HF_AGE_MODEL_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/octet-stream",
+      },
+      body: image as unknown as ArrayBuffer,
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      console.warn("[huggingface-age] error:", detail);
+      return buildFallbackAgeInsight(expression);
+    }
+
+    const raw = (await response.json()) as unknown;
+
+    type AgeCandidate = {
+      label: string;
+      score: number;
+      directAge?: number;
+    };
+
+    const extractCandidate = (): AgeCandidate | null => {
+      if (Array.isArray(raw)) {
+        const sorted = [...raw].sort(
+          (a, b) => Number(b?.score ?? 0) - Number(a?.score ?? 0),
+        );
+        const top = sorted[0];
+        if (top) {
+          return {
+            label: String(top.label ?? "unknown"),
+            score: Number(top.score ?? 0.35),
+          };
+        }
+        return null;
+      }
+
+      if (raw && typeof raw === "object") {
+        const obj = raw as Record<string, unknown>;
+        if (Array.isArray(obj.age_predictions)) {
+          const sorted = [...obj.age_predictions].sort(
+            (a, b) => Number(b?.score ?? 0) - Number(a?.score ?? 0),
+          );
+          const top = sorted[0];
+          if (top) {
+            const topRecord = top as Record<string, unknown>;
+            const label =
+              typeof topRecord.label === "string"
+                ? topRecord.label
+                : typeof topRecord.age === "number"
+                  ? String(topRecord.age)
+                  : "unknown";
+            const score = Number(
+              topRecord.score ?? topRecord.confidence ?? 0.3,
+            );
+            return { label, score };
+          }
+        }
+
+        if (typeof obj.age === "number") {
+          return {
+            label: String(obj.age),
+            score: Number(obj.confidence ?? obj.score ?? 0.55),
+            directAge: obj.age,
+          };
+        }
+
+        if (typeof obj.label === "string") {
+          return {
+            label: obj.label,
+            score: Number(obj.score ?? obj.confidence ?? 0.4),
+          };
+        }
+      }
+
+      return null;
+    };
+
+    const candidate = extractCandidate();
+    if (!candidate) {
+      return buildFallbackAgeInsight(expression);
+    }
+
+    const range = parseAgeLabelRange(String(candidate.label ?? ""));
+    const estimated = computeEstimatedAge(
+      range,
+      typeof candidate.directAge === "number" ? candidate.directAge : undefined,
+    );
+    const confidence = Math.max(
+      0,
+      Math.min(1, Number(candidate.score ?? 0.35)),
+    );
+
+    if (range.min == null && range.max == null && estimated == null) {
+      return buildFallbackAgeInsight(expression);
+    }
+
+    const headline = buildAgeHeadline(range, estimated);
+    const narrative = buildAgeNarrative(range, estimated, confidence);
+
+    return {
+      label: String(candidate.label ?? "unknown"),
+      confidence,
+      estimated,
+      range,
+      headline,
+      narrative,
+    };
+  } catch (error) {
+    console.warn("[huggingface-age] unexpected error:", error);
+    return buildFallbackAgeInsight(expression);
+  }
 }
 
 function buildFallbackAnalysis(
@@ -1040,8 +1460,30 @@ function buildFallbackAnalysis(
 
 async function generateFaceReading(
   token: string,
-  input: { expression: ExpressionInsight; imageHint: string },
+  input: { expression: ExpressionInsight; imageHint: string; age: AgeInsight },
 ) {
+  const affinity =
+    EXPRESSION_MAJOR_AFFINITY[input.expression.label.toLowerCase()] ??
+    EXPRESSION_MAJOR_AFFINITY.default;
+  const formattedAffinity = affinity
+    .map((code) => `${code} (${MAJOR_LABELS[code]})`)
+    .join(", ");
+
+  const ageInsight = input.age;
+  const ageRangeText = formatAgeRangeText(
+    ageInsight.range,
+    ageInsight.estimated,
+  );
+  const ageStage = describeAgeStage(
+    ageInsight.estimated ?? ageInsight.range.min ?? ageInsight.range.max ?? null,
+  );
+  const ageConfidence = Number.isFinite(ageInsight.confidence)
+    ? Math.round(ageInsight.confidence * 100)
+    : 0;
+  const agePromptLine = ageRangeText
+    ? `- Estimasi umur visual: ${ageRangeText} (keyakinan ${ageConfidence}%). Tulis rekomendasi yang relevan bagi ${ageStage.prompt}.`
+    : `- Usia visual belum terbaca dengan pasti; gunakan bahasa yang tetap ramah untuk ${ageStage.prompt}.`;
+
   const systemPrompt = [
     "Kamu adalah peramal wajah modern yang komunikatif, fokus pada pengembangan diri.",
     "Gunakan bahasa Indonesia, tone positif, dan hindari klaim medis.",
@@ -1078,6 +1520,8 @@ async function generateFaceReading(
     "}",
     "Pastikan setiap indikator selaras dengan tone positif, hindari klaim medis.",
     "Batasi kode jurusan hanya pada RPL, DKV, atau TKJ.",
+    "Variasikan jurusan utama sesuai konteks ekspresi dan usia, jangan terpaku pada satu jurusan seperti RPL saja.",
+    "Berikan wawasan lintas disiplin (contoh: peluang industri, komunitas, proyek kolaboratif) agar insight terasa luas dan tidak monoton.",
   ].join(" ");
 
   const userPrompt = [
@@ -1090,6 +1534,8 @@ async function generateFaceReading(
     "- Fokuskan rekomendasi jurusan pada RPL, DKV, atau TKJ. Pilih satu sebagai jurusan utama dan jadikan dua lainnya sebagai alternatif dengan catatan singkat yang relevan.",
     "- Langkah fokus harus aplikatif untuk pelajar (misal: aktivitas penguatan keterampilan, proyek mini, kebiasaan belajar).",
     "- Kebiasaan pendukung gunakan format bullet pendek yang mendukung jurusan utama.",
+    agePromptLine,
+    `- Prioritas jurusan yang umum cocok untuk ekspresi ini: ${formattedAffinity}. Gunakan sebagai referensi agar variasi jurusan utama tetap seimbang dan tidak monoton.`,
     "Jika informasi ekspresi kurang jelas, buat analisis umum yang tetap relevan dan positif.",
   ].join("\n");
 
